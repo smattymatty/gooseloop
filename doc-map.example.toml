@@ -1,0 +1,68 @@
+# doc-map.example.toml — TEMPLATE. Copy to doc-map.toml and edit.
+#
+#     cp doc-map.example.toml doc-map.toml
+#
+# This example is committed so anyone cloning the framework has a working
+# starting point. Your real doc-map.toml is gitignored: it points at your own
+# repos and live URLs, which are yours, not the example's. The engine reads
+# doc-map.toml (set by [doc_drift] map = ... in gooseloop.toml); if it's
+# missing, the precheck tells you to copy this file.
+#
+# Each [[pair]] declares a CANONICAL source of truth and a DERIVED view that is
+# supposed to follow it. doc-drift flags a pair when a side changed since the
+# last time the two were settled, then drafts a patch to the derived side for
+# an operator to read and seal. Drafts are NEVER applied automatically.
+#
+# A side may be a FILE PATH (resolved relative to this file's directory, or
+# absolute / ~) or an http(s) URL (fetched live — use this to check the
+# *published* artifact, not just the file it was built from).
+#
+# FIELDS:
+#   id          stable identifier; the state cache keys off it, so don't rename
+#               casually. Required, unique.
+#   canonical   the source of truth (path or URL). Required.
+#   derived     the view that must follow it. A single value, or a list (one
+#               canonical, many derived views: id becomes "<id>::<name>").
+#               Required.
+#   note        pasted into the drift context so the model knows what "in sync"
+#               means for this pair. Optional but worth writing.
+#   intentional = true hard-suppresses the pair: a declared, permanent
+#               divergence that should never be flagged. Optional.
+
+# A file→file pair: a code module is canonical, a doc derived from it must follow.
+[[pair]]
+id = "config-reference"
+canonical = "../myrepo/src/settings.py"
+derived = "../myrepo/docs/configuration.md"
+note = "Every setting and default in the doc must match the constants in settings.py."
+
+# A file→URL pair: check that the PUBLISHED page still matches its source.
+# Catches deploy lag and rendering drift that a file-only check can't see.
+[[pair]]
+id = "pricing-page-live"
+canonical = "../myrepo/src/pricing.py"
+derived = "https://example.com/guide/pricing/"
+note = "The live pricing page must show the prices defined in pricing.py."
+
+# A [[collection]]: discover MANY derived views and check every one against the
+# shared canonical(s). New pages are picked up automatically. Discovery is one of:
+#   glob    — a filesystem pattern; one pair per matching file (a whole doc tree
+#             or wiki). No network.
+#   sitemap — a sitemap URL; one pair per <loc> whose path matches `match`.
+#   index   — an index page URL; one pair per <a href> whose path matches `match`.
+# `canonical` may be a single source or a list.
+
+# Filesystem: check an entire docs/wiki tree against the product facts.
+[[collection]]
+id = "docs"
+canonical = ["../myrepo/src/pricing.py", "../myrepo/docs/product-facts.md"]
+glob = "../myrepo/docs/**/*.md"
+note = "No docs page may contradict canonical pricing, product names, or facts."
+
+# Live site: check every post on a blog, discovered from its sitemap.
+[[collection]]
+id = "blog"
+canonical = ["../myrepo/docs/product-facts.md"]
+sitemap = "https://example.com/sitemap.xml"   # or: index = "https://example.com/blog/"
+match = "^/blog/.+"                            # URL-path regex selecting the posts
+note = "No blog post may contradict the canonical product facts."

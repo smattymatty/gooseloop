@@ -1,0 +1,38 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+build/
+dist/
+
+# Runtime output dirs — session bookkeeping and engine artifacts.
+# NOTE: .gitignore has no inline comments; a trailing "# ..." becomes part of
+# the pattern and silently matches nothing. Keep every comment on its own line.
+reviews/
+# git-recap engine output (configurable; default name)
+recaps/
+# hello-world engine output
+greetings/
+# doc-drift patch drafts (configurable; default name)
+doc-drift-drafts/
+# doc-drift cross-run memory (machine-written)
+doc-map.state.json
+
+# doc-drift map: the operator's real map points at their own repos + live URLs,
+# so it's private. The committed template is doc-map.example.toml.
+doc-map.toml
+!doc-map.example.toml
+
+# Recipe overlays + goose state.
+*.local.yaml
+.goose/
+
+# Editor + OS noise.
+*.swp
+.DS_Store
+
+# Per-machine Claude Code local settings.
+.claude/settings.local.json

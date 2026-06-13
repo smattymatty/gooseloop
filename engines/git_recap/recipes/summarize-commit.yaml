@@ -1,0 +1,42 @@
+version: "1.0.0"
+title: "summarize one commit"
+description: "Body phase: read one commit's diff, write a recap summary."
+
+context:
+  - label: "COMMIT DIFF"
+    source: env_method:diff_for_current
+
+prompt: |
+  You are summarising a single git commit for an end-of-week recap.
+
+  The COMMIT DIFF block above is the full `git show --stat --patch` for:
+
+      repo: ${REPO}
+      sha:  ${SHA}
+
+  Write a recap entry for this commit. Aim for 3-6 sentences. Cover:
+
+    - what changed (the actual semantic delta, not "modified 4 files")
+    - why it matters (user-facing, perf, security, refactor, docs)
+    - anything notable about implementation (a clever bit, a tradeoff,
+      a known gap left for follow-up)
+
+  Save the recap to the EXACT path:
+
+      ${OUTPUT_PATH}
+
+  This path is computed by the framework (slugified subject plus
+  short sha) so re-runs can detect this commit has already been
+  summarised. Do NOT use any other filename. Ensure the parent
+  directory exists.
+
+  The file should start with a H1 header naming the commit subject,
+  then the recap prose. No preamble, no sign-off.
+
+settings:
+  goose_provider: "openrouter"
+  goose_model: "anthropic/claude-haiku-4-5"
+
+extensions:
+  - type: builtin
+    name: developer

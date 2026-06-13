@@ -1,0 +1,80 @@
+version: "1.0.0"
+title: "doc-drift: draft a patch for one drifted derived view"
+description: "Body phase: read the bundled canonical + derived, draft the edit that brings the derived view back in sync."
+
+context:
+  - label: "BOTH SIDES OF THE DRIFTED PAIR"
+    source: env_file:CONTEXT_FILE
+
+prompt: |
+  You are drafting a patch for ONE derived view that may have fallen behind its
+  canonical source. The BOTH SIDES block above is a bundle the engine assembled:
+  the CANONICAL source(s) of truth, then the DERIVED view (fetched live if it is
+  a URL), then a NOTE describing what "in sync" means for this pair.
+
+  The bundle MAY also include a "WHAT CHANGED IN THE CANONICAL SINCE THE DERIVED
+  LAST FOLLOWED" section: operator commit recaps for the changes that landed on
+  the canonical after the derived view last moved. If it is present, use it to
+  zero in on what actually changed and why, instead of re-diffing both whole
+  documents. If it is absent, just compare the two texts as before. The
+  canonical text above is always the source of truth; the recaps only explain it.
+
+  Pair: ${PAIR_ID}
+
+  Compare them. Find every place the derived view disagrees with the canonical:
+  stale numbers, renamed products or fields, dropped or added options, retired
+  terminology, claims the canonical no longer supports. The canonical wins every
+  time. You are proposing edits to the DERIVED view only; never propose changing
+  the canonical.
+
+  Write a draft to the EXACT path:
+
+      ${OUTPUT_PATH}
+
+  It is for a human to review and apply by hand; it is NOT applied automatically.
+
+  The VERY FIRST LINE of the file must be a machine marker, exactly one of:
+
+      <!-- doc-drift: drift=yes -->     (real drift; you propose edits below)
+      <!-- doc-drift: drift=none -->    (false positive; the two agree)
+
+  The engine reads that line to decide whether a patch is waiting to be sealed
+  or the pair is in sync. Get it right.
+
+  If there IS real drift, after the marker write:
+
+      # Drift patch: ${PAIR_ID}
+
+      ## Summary
+      One or two sentences: what the canonical says and what the derived view
+      still says.
+
+      ## Proposed edits
+      For each discrepancy, a numbered block with:
+        - **Where**: the section or passage in the derived view
+        - **Now**: the current (stale) text, quoted
+        - **Change to**: the corrected text
+        - **Because**: the canonical value or rule that forces the change
+
+      If the derived view is a live URL you cannot edit directly, say where the
+      change must be made (the page's source: a template, a CMS entry, or a
+      database record) so the operator knows where to act.
+
+  If there is NO real drift, write the drift=none marker, then a one-line
+  `# In sync: ${PAIR_ID}` heading and a sentence saying so. Propose no edits.
+  A recorded false positive is fine; a fabricated edit is not.
+
+  Storm voice for any prose: no em-dashes (use a comma, period, or colon), no
+  emojis, no filler. The corrected text you propose must match the canonical
+  exactly, not your paraphrase of it. Ensure ${OUTPUT_PATH}'s parent exists.
+
+settings:
+  goose_provider: "openrouter"
+  # Stronger tier than the review on purpose: this is the step that reads two
+  # whole documents and reasons about their disagreement. The deterministic
+  # triage already filtered to real candidates, so the spend is bounded.
+  goose_model: "anthropic/claude-sonnet-4-5"
+
+extensions:
+  - type: builtin
+    name: developer

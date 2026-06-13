@@ -1,0 +1,197 @@
+"""TypedDicts and validation for the gooseloop review protocol.
+
+See gooseloop/PROTOCOL.md for the canonical contract and ADR 0007 for
+the rationale. The framework reads these keys; engines may add arbitrary
+extension keys to any of these structures.
+
+Validation is **liberal in what it accepts, strict in what the schema
+guarantees on the way out**:
+
+  - Status synonyms (success/ok/complete/failed/incomplete/...) canonicalise
+    to the three-value enum. Unknown synonyms raise.
+  - Non-load-bearing keys (insights, operator_actions) default to [] when
+    missing. They're informational; absence is "model had nothing to say"
+    not "model broke the contract."
+  - Load-bearing keys (protocol_version, status, summary, routing) are
+    strictly required. Absence means the review can't drive the framework.
+  - protocol_version major must match what we ship.
+
+This is the validate-side companion to the parser-side leniency in
+gooseloop.extract: accept what's obviously the same intent in a slightly
+different shape, fail loud on actual contract violations.
+"""
+
+from typing import Any, Literal, TypedDict
+
+
+PROTOCOL_VERSION = "1.0"
+PROTOCOL_MAJOR = 1
+
+
+class RoutingEntry(TypedDict, total=False):
+    """One entry in the review's routing[] list."""
+    recipe: str
+    params: dict[str, Any]
+    reason: str
+
+
+class OperatorAction(TypedDict, total=False):
+    """One entry in the session's operator_actions ledger."""
+    action: str
+    why: str
+
+
+ReviewStatus = Literal["done", "partial", "error"]
+
+
+class ReviewOutput(TypedDict, total=False):
+    """Canonical review payload after validation."""
+    protocol_version: str
+    status: ReviewStatus
+    summary: str
+    insights: list[str]
+    routing: list[RoutingEntry]
+    operator_actions: list[OperatorAction]
+
+
+# Keys the framework can't function without. A review missing any of
+# these can't drive routing or the session ledger; refuse loud.
+REQUIRED_KEYS = ("protocol_version", "status", "summary", "routing")
+
+# Keys the framework reads but treats as optional in the schema. Missing
+# = "model had nothing to add"; default to empty list and proceed.
+DEFAULTED_LIST_KEYS = ("insights", "operator_actions")
+
+# Status synonyms. Models drift on the status enum more than on any
+# other field; canonicalise here so downstream code only sees the three
+# canonical values. Unknown values raise (a fresh synonym should land
+# in this table, not slip past the validator).
+_STATUS_SYNONYMS: dict[str, ReviewStatus] = {
+    "done": "done",
+    "success": "done",
+    "ok": "done",
+    "complete": "done",
+    "completed": "done",
+    "finished": "done",
+    "partial": "partial",
+    "incomplete": "partial",
+    "in_progress": "partial",
+    "in-progress": "partial",
+    "pending": "partial",
+    "error": "error",
+    "errored": "error",
+    "failed": "error",
+    "failure": "error",
+    "broken": "error",
+}
+
+
+class ProtocolVersionError(RuntimeError):
+    """Raised when a review declares a major version the framework does not support."""
+
+
+def validate_review(payload: dict) -> ReviewOutput:
+    """Canonicalise + validate a review payload.
+
+    Returns a NEW dict with synonyms canonicalised, defaulted lists
+    filled in, and entry shapes normalised. The original payload is
+    not mutated.
+
+    Normalisations performed (liberal in what we accept):
+
+      - status: synonyms ("success", "ok", ...) collapse to the
+        three-value enum.
+      - insights/operator_actions: missing or None becomes [].
+      - operator_actions entries: a bare string becomes
+        {"action": <string>, "why": ""}. A dict missing "why" gets
+        why="". Malformed entries (non-string, non-dict, or dict with
+        no "action") are dropped.
+      - routing entries: a dict missing optional fields gets default
+        params={} and reason="". Entries without a "recipe" string
+        are dropped.
+    """
+    missing = [k for k in REQUIRED_KEYS if k not in payload]
+    if missing:
+        raise ValueError(f"review missing required keys: {missing}")
+
+    _check_protocol_version(str(payload["protocol_version"]))
+
+    raw_status = str(payload["status"]).strip().lower()
+    canonical_status = _STATUS_SYNONYMS.get(raw_status)
+    if canonical_status is None:
+        raise ValueError(
+            f"review status {payload['status']!r} not recognised "
+            f"(known: {sorted(set(_STATUS_SYNONYMS))})"
+        )
+
+    out: dict[str, Any] = dict(payload)
+    out["status"] = canonical_status
+    for key in DEFAULTED_LIST_KEYS:
+        if key not in out or out[key] is None:
+            out[key] = []
+    out["operator_actions"] = _normalise_operator_actions(out["operator_actions"])
+    out["routing"] = _normalise_routing(out["routing"])
+    return out  # type: ignore[return-value]
+
+
+def _normalise_operator_actions(entries: Any) -> list[OperatorAction]:
+    """Coerce loose shapes into well-formed OperatorAction dicts."""
+    if not isinstance(entries, list):
+        return []
+    out: list[OperatorAction] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            action = entry.strip()
+            if action:
+                out.append({"action": action, "why": ""})  # type: ignore[typeddict-item]
+            continue
+        if isinstance(entry, dict):
+            action = str(entry.get("action", "")).strip()
+            if not action:
+                continue
+            normalised: OperatorAction = {  # type: ignore[typeddict-item]
+                "action": action,
+                "why": str(entry.get("why", "")),
+            }
+            for k, v in entry.items():
+                if k not in ("action", "why"):
+                    normalised[k] = v  # type: ignore[literal-required]
+            out.append(normalised)
+    return out
+
+
+def _normalise_routing(entries: Any) -> list[RoutingEntry]:
+    """Coerce loose shapes into well-formed RoutingEntry dicts."""
+    if not isinstance(entries, list):
+        return []
+    out: list[RoutingEntry] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        recipe = entry.get("recipe")
+        if not isinstance(recipe, str) or not recipe.strip():
+            continue
+        normalised: RoutingEntry = {  # type: ignore[typeddict-item]
+            "recipe": recipe.strip(),
+            "params": entry.get("params") if isinstance(entry.get("params"), dict) else {},
+            "reason": str(entry.get("reason", "")),
+        }
+        out.append(normalised)
+    return out
+
+
+def _check_protocol_version(declared: str) -> None:
+    try:
+        major = int(declared.split(".", 1)[0])
+    except (ValueError, IndexError):
+        raise ProtocolVersionError(
+            f"protocol_version {declared!r} is not parseable; "
+            f"framework supports major {PROTOCOL_MAJOR}"
+        )
+    if major != PROTOCOL_MAJOR:
+        raise ProtocolVersionError(
+            f"review declares protocol_version {declared!r} (major {major}); "
+            f"framework supports major {PROTOCOL_MAJOR} only"
+        )
+
+

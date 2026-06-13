@@ -1,0 +1,53 @@
+version: "1.0.0"
+title: "git-recap summary"
+description: "Save a weekly recap markdown grouped by repo; surface operator actions."
+
+context:
+  - label: "PER-COMMIT RECAPS"
+    source: glob:${OUTPUT_DIR}/*.md
+    optional: true
+  - label: "REVIEW JSON"
+    source: env_file:REVIEW_JSON_PATH
+    optional: true
+
+prompt: |
+  You are the summary phase of the git-recap engine.
+
+  Compose a weekly recap as markdown with this structure:
+
+      # Weekly recap — ${WINDOW_DAYS}d window — ${AUTHOR}
+
+      ## <repo path>
+      ### <commit subject>
+      <recap prose from the per-commit file>
+
+      ## Operator actions
+      - **<action>**
+        <why, if non-empty>
+
+  Group commits by repo (the REVIEW JSON tells you which repo each
+  routed commit belongs to). The operator-actions section comes last;
+  omit it if the ledger is empty.
+
+  Only include commits that appear in the REVIEW JSON's routing[]
+  list. Older per-commit files from prior runs may still be sitting
+  in OUTPUT_DIR; ignore any that the current review didn't route.
+
+  SAVE the rendered recap to:
+
+      ${WEEKLY_DIR}/weekly-${RECAP_DATE}.md
+
+  Create ${WEEKLY_DIR} (the weekly/ subdirectory) if it doesn't
+  exist. The filename is date-stamped so each run lands as a new
+  file alongside prior weeks' recaps rather than overwriting them.
+
+  After saving, also print the full markdown to stdout so the operator
+  sees it in the session footer.
+
+settings:
+  goose_provider: "openrouter"
+  goose_model: "anthropic/claude-haiku-4-5"
+
+extensions:
+  - type: builtin
+    name: developer

@@ -1,0 +1,42 @@
+# gooseloop project config — points at the hello-world reference engine.
+# A consuming project replaces engine_module with their own.
+
+[gooseloop]
+default_model = "deepseek/deepseek-v4-flash"
+sessions_dir = "reviews/sessions"
+engine_module = "engines.hello_world"
+max_queue_depth = 50
+review_recipe = "review.yaml"
+summary_recipe = "summary.yaml"
+
+[gooseloop.retry]
+max_retries = 6
+base_delay = 5
+                   
+# Example config for the git-recap engine. Uncomment and edit, then run:
+#     python3 -m gooseloop run -e engines.git_recap
+
+[git_recap]
+repos = [
+    "/path/to/your/repo",
+    "/path/to/another/repo",
+]
+window_days = 7
+max_commits = 50         # total budget, split evenly across repos (25 each here); 0 = no cap
+author = "auto"          # or hardcode an email
+output_dir = "recaps"    # where per-commit summaries land
+
+# Example config for the doc-drift engine. Run it whenever you like:
+#     python3 -m gooseloop run -e engines.doc_drift
+#
+# First time: `cp doc-map.example.toml doc-map.toml` and edit. Your doc-map.toml
+# is gitignored (your repos + URLs); doc-map.example.toml is the committed
+# template. The engine reads the canonical→derived map, finds derived docs (or
+# live pages) that fell behind their canonical source, and drafts a patch for
+# each (to seal, never auto-applied). Paths are relative to cwd, like
+# git_recap's output_dir — run from this dir.
+
+[doc_drift]
+map = "doc-map.toml"               # the canonical→derived map (gitignored; copy the .example)
+state = "doc-map.state.json"       # the engine's own cross-run memory (machine-written)
+drafts_dir = "doc-drift-drafts"    # where per-pair patch drafts land

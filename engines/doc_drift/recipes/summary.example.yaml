@@ -1,0 +1,43 @@
+version: "1.0.0"
+title: "doc-drift summary"
+description: "Render a drift report: which derived docs have drafts waiting, and which map entries are broken."
+
+context:
+  - label: "PATCH DRAFTS THIS RUN"
+    source: glob:${DRAFTS_DIR}/*.patch.md
+    optional: true
+
+prompt: |
+  You are the summary phase of the doc-drift engine. Render a short drift
+  report as markdown with this structure:
+
+      # Doc-drift report — ${DRIFT_DATE}
+
+      ## Drafts waiting to seal
+      For each patch draft in the PATCH DRAFTS block, a bullet:
+      - **<pair id>** — one-line summary of the proposed change (pull it from
+        the draft's own Summary section). Link or name the draft file.
+
+      ## Map health
+      List any broken map entries the operator actions flagged (a path that no
+      longer resolves). If none, write "All map entries resolve."
+
+      ## Quiet
+      One line: how many declared pairs were in sync or skipped this run and
+      needed no action.
+
+  If the PATCH DRAFTS block is empty, the report is short and good news: say
+  every derived view is in sync with its canonical and there is nothing to
+  seal. Do not invent drafts that aren't in the block.
+
+  Storm voice: no em-dashes, no emojis, no filler. Print the full markdown to
+  stdout so the operator sees it in the session footer. You do not need to save
+  a file; the engine records its own state separately.
+
+settings:
+  goose_provider: "openrouter"
+  goose_model: "anthropic/claude-haiku-4-5"
+
+extensions:
+  - type: builtin
+    name: developer

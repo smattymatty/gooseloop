@@ -1,0 +1,57 @@
+version: "1.0.0"
+title: "hello-world review"
+description: "Read NAMES, emit routing[] of greet invocations."
+
+context:
+  - label: "NAMES IN SCOPE"
+    source: env_method:names_listing
+
+prompt: |
+  You are the review phase of the hello-world reference engine.
+
+  The NAMES IN SCOPE block above lists the names this run should greet.
+  Emit one routing[] entry per name, each invoking the `greet` recipe.
+
+  CRITICAL OUTPUT CONTRACT — read carefully:
+
+  Your final assistant message MUST end with a JSON object wrapped in
+  two marker lines, BOTH spelled EXACTLY as shown, character-for-character.
+  Do not rename, abbreviate, translate, or "improve" the marker words.
+  The framework parses by exact-string match; any deviation will be
+  rejected and this phase will be marked as a failed review.
+
+  Use these exact literal markers (copy them verbatim):
+
+      <<<DELIVERABLE_JSON>>>
+      <<<END_DELIVERABLE>>>
+
+  Wrong: <<<DELIMITED_JSON>>>, <<<JSON_START>>>, <<<BEGIN_JSON>>>, ```json
+  Right: <<<DELIVERABLE_JSON>>> ... <<<END_DELIVERABLE>>>
+
+  The JSON between the markers must conform to protocol_version 1.0:
+
+    {
+      "protocol_version": "1.0",
+      "status": "done",
+      "summary": "one-paragraph state",
+      "insights": ["..."],
+      "routing": [
+        { "recipe": "greet", "params": { "name": "world" }, "reason": "first greeting" }
+      ],
+      "operator_actions": []
+    }
+
+  Required keys: protocol_version, status, summary, insights, routing,
+  operator_actions. status must be one of: "done", "partial", "error".
+
+  Emit your final message in this exact shape:
+
+      <<<DELIVERABLE_JSON>>>
+      { ...your JSON object... }
+      <<<END_DELIVERABLE>>>
+
+settings:
+  goose_provider: "openrouter"
+  goose_model: "anthropic/claude-haiku-4-5"
+
+extensions: []
