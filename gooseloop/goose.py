@@ -15,7 +15,7 @@ from typing import Any, Callable, Optional
 
 import yaml
 
-from .context_prepend import render_recipe_with_context
+from .context_prepend import _BlockStyleDumper, render_recipe_with_context
 from .footer import print_call_footer, recipe_label
 from .recipe_merge import load_layered_recipe
 from .text import Color, colored
@@ -226,7 +226,8 @@ def _prepared_recipe(recipe_path: Path,
         tmp = tempfile.NamedTemporaryFile(
             mode="w", suffix=".merged.yaml", delete=False,
         )
-        yaml.safe_dump(merged, tmp, sort_keys=False, default_flow_style=False)
+        yaml.dump(merged, tmp, Dumper=_BlockStyleDumper, sort_keys=False,
+                  default_flow_style=False, allow_unicode=True)
         tmp.close()
         rendered = tmp.name
     try:

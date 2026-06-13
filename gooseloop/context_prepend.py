@@ -217,6 +217,27 @@ def _resolve_source(source: str, env: dict[str, str], environment: Any, *,
     )
 
 
+class _BlockStyleDumper(yaml.SafeDumper):
+    """SafeDumper that emits multi-line strings as literal block scalars (`|`).
+
+    The default double-quoted folding splits long scalars at ~80 columns,
+    which can land a break in the middle of a goose template tag
+    (`{% raw %}` / `{% endraw %}`). goose's YAML parser reconstructs that
+    fold in a way that mangles the tag, so MiniJinja never sees the raw-block
+    terminator and fails with "unexpected end of raw block". A literal block
+    scalar preserves the prompt verbatim with no folding, so the tags the
+    framework wraps around every pasted context block survive intact.
+    """
+
+
+def _literal_str_representer(dumper: yaml.Dumper, data: str):
+    style = "|" if "\n" in data else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
+
+
+_BlockStyleDumper.add_representer(str, _literal_str_representer)
+
+
 def render_recipe_with_context(
     recipe: dict | str | Path,
     extra_env: dict[str, str],
@@ -275,6 +296,7 @@ def render_recipe_with_context(
         suffix=".rendered.yaml",
         delete=False,
     )
-    yaml.safe_dump(doc, tmp, sort_keys=False, default_flow_style=False)
+    yaml.dump(doc, tmp, Dumper=_BlockStyleDumper, sort_keys=False,
+              default_flow_style=False, allow_unicode=True)
     tmp.close()
     return tmp.name
