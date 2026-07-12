@@ -13,10 +13,14 @@ def _read(path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def test_no_context_block_and_no_env_refs_returns_none(tmp_path):
-    """No context: block and no ${VAR} in prompt -> nothing to render."""
+def test_no_context_block_and_no_env_refs_renders_unchanged(tmp_path):
+    """No context: block and no ${VAR} in prompt -> rendered verbatim.
+
+    A rendered file is always written (the recipe dict is the merged
+    overlay result, so the original file on disk may not match it)."""
     recipe = {"prompt": "do thing"}
-    assert render_recipe_with_context(recipe, extra_env={}) is None
+    rendered = render_recipe_with_context(recipe, extra_env={})
+    assert _read(rendered)["prompt"] == "do thing"
 
 
 def test_env_file_loads_referenced_file(tmp_path):
@@ -189,7 +193,8 @@ def test_dollar_dollar_not_treated_as_var(tmp_path):
     should pass through unchanged when no var matches."""
     recipe = {"prompt": "literal $ sign here"}
     # `$ ` — no valid var name follows, so the regex shouldn't match.
-    assert render_recipe_with_context(recipe, extra_env={}) is None
+    rendered = render_recipe_with_context(recipe, extra_env={})
+    assert _read(rendered)["prompt"] == "literal $ sign here"
 
 
 # ---- pasted context must be inert to goose's MiniJinja templater ----
@@ -313,6 +318,34 @@ def test_dollar_sequences_in_context_are_not_clobbered(tmp_path):
     assert "set $HOME and read ${WINDOW_DAYS} days" in out
     # ...while the recipe's own prompt prose is still substituted.
     assert "window is 7" in out
+
+
+def test_rendered_yaml_never_folds_long_lines(tmp_path):
+    """Regression 2026-07-12 (round three of the raw-block saga): serializing
+    the rendered recipe. Literal block scalars (round two's commit) are only
+    half the fix: PyYAML silently falls back to double-quoted style when any
+    line carries trailing whitespace (a pasted config line like
+    `location_constraint = ` does), and double-quoted folds at the default
+    width, physically splitting a line right where a `{{ tag }}` or the
+    framework's raw-block terminator can sit. goose templates over the raw
+    file text, so a fold IS a break. The width=_NO_FOLD_WIDTH kwarg on every
+    dump keeps each scalar line physical no matter the style.
+
+    This fixture forces the double-quoted fallback (trailing whitespace) AND
+    a line long past the default fold width carrying a template token."""
+    long_line = "x" * 200 + " {{ csrfToken }} end"
+    body = "[config]\nlocation_constraint = \n" + long_line + "\n"
+    (tmp_path / "cfg.md").write_text(body)
+    recipe = {
+        "prompt": "read the config",
+        "context": [{"label": "CFG", "source": "glob:${DIR}/*.md"}],
+    }
+    rendered = render_recipe_with_context(recipe, extra_env={"DIR": str(tmp_path)})
+    raw = Path(rendered).read_text()
+    # The long line must survive as ONE physical line in the file goose reads.
+    assert long_line in raw, "YAML emitter folded a long scalar line"
+    # And the YAML-level round trip is exact (trailing whitespace intact).
+    assert body.rstrip("\n") in _read(rendered)["prompt"]
 
 
 def test_hello_world_review_recipe_uses_literal_sentinels(tmp_path):

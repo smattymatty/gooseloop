@@ -3,7 +3,7 @@
 Guidance for an AI agent helping someone build a loop with **gooseloop**. If
 you are that agent: read this first, then read the files it points you to, in
 the order it gives. Do not invent the contract from the code; the contract is
-written down (`gooseloop/PROTOCOL.md`) and the code obeys it.
+written down (`PROTOCOL.md`) and the code obeys it.
 
 ## What gooseloop is
 
@@ -41,7 +41,7 @@ not from submodules.
 
 ## If you are an agent authoring a loop, do this
 
-1. **Read `gooseloop/PROTOCOL.md` end to end.** It is canonical. It defines the
+1. **Read `PROTOCOL.md` end to end.** It is canonical. It defines the
    review JSON schema (§2), the summary contract (§3), what body phases may and
    may not mutate (§4), `BranchPolicy` (§5), recipe overlay merge (§6), and the
    recipe `context:` block (§7). If the code ever disagrees with it, the code is

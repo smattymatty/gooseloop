@@ -4,20 +4,14 @@ Pure execution layer. Knows about goose, OpenRouter-style rate-limit messages,
 and transient errors. Knows nothing about Phases, engines, or sessions.
 """
 
-import contextlib
 import os
 import re
 import subprocess
 import sys
 import time
-from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
-import yaml
-
-from .context_prepend import _BlockStyleDumper, render_recipe_with_context
 from .footer import print_call_footer, recipe_label
-from .recipe_merge import load_layered_recipe
 from .text import Color, colored
 
 
@@ -164,7 +158,7 @@ def _countdown_sleep(seconds: int, header: str, color: str | None = None) -> Non
 
 
 def _run_goose_internal(recipe_path: str, model: str,
-                        extra_env: dict | None = None) -> tuple[str, int]:
+                        extra_env: dict[str, str] | None = None) -> tuple[str, int]:
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
@@ -197,63 +191,22 @@ def count_shell_calls(output: str) -> int:
     return output.count("▸ shell")
 
 
-@contextlib.contextmanager
-def _prepared_recipe(recipe_path: Path,
-                     extra_env: dict | None,
-                     *,
-                     environment: Any = None,
-                     local_path: Path | None = None,
-                     overlay_paths: list[Path] | None = None):
-    """Yield the effective recipe path: overlay-merged + context-block rendered.
-
-    Steps:
-        1. Merge base + local + CLI overlays into one dict (recipe_merge).
-        2. Resolve the context: block to literal text (context_prepend).
-        3. Write a temp YAML file goose can read; yield its path.
-
-    Cleanup happens on context exit unless GOOSER_KEEP_RENDERED=1 is set.
-    """
-    merged = load_layered_recipe(
-        recipe_path,
-        local_path=local_path,
-        overlay_paths=overlay_paths,
-    )
-    rendered = render_recipe_with_context(merged, extra_env or {}, environment=environment)
-    if rendered is None:
-        # No context: block — write the merged dict to a temp file so any
-        # overlay changes still reach goose.
-        import tempfile
-        tmp = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".merged.yaml", delete=False,
-        )
-        yaml.dump(merged, tmp, Dumper=_BlockStyleDumper, sort_keys=False,
-                  default_flow_style=False, allow_unicode=True)
-        tmp.close()
-        rendered = tmp.name
-    try:
-        yield rendered
-    finally:
-        if not os.environ.get("GOOSER_KEEP_RENDERED"):
-            try:
-                os.unlink(rendered)
-            except OSError:
-                pass
-
-
 def run_goose_with_retry(
     recipe_path: str,
     model: str,
-    extra_env: dict | None = None,
+    extra_env: dict[str, str] | None = None,
     *,
     max_retries: int = 6,
     base_delay: int = 5,
     success_predicate: Optional[Callable[[str], bool]] = None,
     label: str | None = None,
-    environment: Any = None,
-    local_path: Path | None = None,
-    overlay_paths: list[Path] | None = None,
 ) -> str:
     """Run goose with automatic retry on transient errors.
+
+    `recipe_path` is the effective recipe file to run — callers that
+    layer overlays or render context: blocks prepare it first (see
+    context_prepend.prepared_recipe) and pass `label` so footers and
+    errors name the real recipe, not the rendered temp file.
 
     Rate-limit errors wait RATE_LIMIT_WAIT_SECONDS (65s). Other transient
     errors use base_delay * (attempt+1) backoff. `success_predicate(output)`
@@ -266,55 +219,49 @@ def run_goose_with_retry(
     retries_used = 0
     final_output: str | None = None
 
-    with _prepared_recipe(
-        Path(recipe_path), extra_env,
-        environment=environment,
-        local_path=local_path,
-        overlay_paths=overlay_paths,
-    ) as effective_path:
-        for attempt in range(max_retries):
-            output, returncode = _run_goose_internal(effective_path, model, extra_env)
+    for attempt in range(max_retries):
+        output, returncode = _run_goose_internal(recipe_path, model, extra_env)
 
-            # Persistent failure shortcuts the retry loop: a provider that
-            # filters tool calls or a model that can't speak goose's tool
-            # protocol will not improve with another attempt. Fail fast
-            # rather than burn max_retries on something structurally broken.
-            if _is_persistent_failure(output):
-                if _is_recipe_error(output):
-                    reason = (
-                        "Recipe failed to parse; not retrying (the recipe bytes "
-                        "are identical every attempt). Fix the recipe/template:"
-                    )
-                else:
-                    reason = (
-                        "Persistent provider/model failure detected; not retrying "
-                        "(recipe + model + provider combination appears incompatible)."
-                    )
-                print(colored(reason, Color.RED), file=sys.stderr)
-                detail = _first_recipe_error_line(output)
-                if detail:
-                    print(colored(f"  {detail}", Color.RED), file=sys.stderr)
-                break
-
-            if success_predicate is not None:
-                success = success_predicate(output)
+        # Persistent failure shortcuts the retry loop: a provider that
+        # filters tool calls or a model that can't speak goose's tool
+        # protocol will not improve with another attempt. Fail fast
+        # rather than burn max_retries on something structurally broken.
+        if _is_persistent_failure(output):
+            if _is_recipe_error(output):
+                reason = (
+                    "Recipe failed to parse; not retrying (the recipe bytes "
+                    "are identical every attempt). Fix the recipe/template:"
+                )
             else:
-                success = not _is_transient_error(output, returncode)
+                reason = (
+                    "Persistent provider/model failure detected; not retrying "
+                    "(recipe + model + provider combination appears incompatible)."
+                )
+            print(colored(reason, Color.RED), file=sys.stderr)
+            detail = _first_recipe_error_line(output)
+            if detail:
+                print(colored(f"  {detail}", Color.RED), file=sys.stderr)
+            break
 
-            if success:
-                final_output = output
-                break
+        if success_predicate is not None:
+            success = success_predicate(output)
+        else:
+            success = not _is_transient_error(output, returncode)
 
-            retries_used += 1
-            if _is_rate_limit(output):
-                delay = RATE_LIMIT_WAIT_SECONDS
-                header = f"Rate limit hit  ·  attempt {attempt + 1}/{max_retries}"
-                color = Color.YELLOW
-            else:
-                delay = base_delay * (attempt + 1)
-                header = f"Transient error  ·  attempt {attempt + 1}/{max_retries}"
-                color = Color.MAGENTA
-            _countdown_sleep(delay, header, color=color)
+        if success:
+            final_output = output
+            break
+
+        retries_used += 1
+        if _is_rate_limit(output):
+            delay = RATE_LIMIT_WAIT_SECONDS
+            header = f"Rate limit hit  ·  attempt {attempt + 1}/{max_retries}"
+            color = Color.YELLOW
+        else:
+            delay = base_delay * (attempt + 1)
+            header = f"Transient error  ·  attempt {attempt + 1}/{max_retries}"
+            color = Color.MAGENTA
+        _countdown_sleep(delay, header, color=color)
 
     if final_output is None:
         elapsed = time.perf_counter() - start
@@ -327,7 +274,9 @@ def run_goose_with_retry(
             "without retrying (persistent failure)" if retries_used == 0
             else f"after {retries_used} retr{'y' if retries_used == 1 else 'ies'}"
         )
-        raise RuntimeError(f"goose failed {attempts_desc}: {recipe_path}")
+        raise RuntimeError(
+            f"goose failed {attempts_desc}: {label or recipe_path}"
+        )
 
     elapsed = time.perf_counter() - start
     print_call_footer(

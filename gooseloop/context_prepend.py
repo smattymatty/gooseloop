@@ -15,19 +15,26 @@ Sources:
 Failure is loud by default. `optional: true` softens to a sentinel
 placeholder when a source is unresolvable.
 
-If GOOSER_KEEP_RENDERED=1 the rendered recipe is left on disk for
-inspection. Default is delete-after-run (cleanup is the caller's
-responsibility).
+This module owns the whole preparation step: prepared_recipe() merges
+overlay layers (recipe_merge), renders the context: block, and yields
+the effective temp recipe for goose to run. If GOOSER_KEEP_RENDERED=1
+the rendered recipe is left on disk for inspection; the default is
+delete-on-exit.
 """
 
+import contextlib
 import glob as _glob
 import os
 import re
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
+
+from .recipe_merge import load_layered_recipe
+from .toolkit import ZWSP as _ZWSP
 
 
 _BLOCK_OPEN = "<<<CONTEXT: {label}>>>"
@@ -52,11 +59,11 @@ _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9
 # block can't safely contain, so _raw_wrap defuses them.
 _RAW_CTRL_RE = re.compile(r"\{%-?\s*(?:end)?raw\s*-?%\}")
 
-# Zero-width space. Inserted between the `{` and `%` of a raw-control token so
-# MiniJinja no longer sees a `{%` tag opener. The character is invisible, so
-# the model reading the pasted text sees essentially the original; only the
-# ephemeral rendered prompt is touched (the on-disk recap is never modified).
-_ZWSP = "​"
+# _ZWSP (imported from toolkit, the one home for the zero-width-space trick)
+# is inserted between the `{` and `%` of a raw-control token so MiniJinja no
+# longer sees a `{%` tag opener. The character is invisible, so the model
+# reading the pasted text sees essentially the original; only the ephemeral
+# rendered prompt is touched (the on-disk recap is never modified).
 
 
 def _raw_wrap(text: str) -> str:
@@ -83,12 +90,8 @@ def _raw_wrap(text: str) -> str:
     return "{% raw %}" + defused + "{% endraw %}"
 
 
-def _prompt_needs_substitution(prompt: str) -> bool:
-    return isinstance(prompt, str) and bool(_ENV_VAR_RE.search(prompt))
-
-
 def _substitute_env(template: str, env: dict[str, str]) -> str:
-    def repl(m: re.Match) -> str:
+    def repl(m: re.Match[str]) -> str:
         name = m.group(1) or m.group(2)
         return env.get(name, "")
     return _ENV_VAR_RE.sub(repl, template)
@@ -177,7 +180,7 @@ def _resolve_env_method(arg: str, environment: Any) -> str:
     return result
 
 
-def substitute_env_in_prompt(doc: dict, env: dict[str, str]) -> dict:
+def substitute_env_in_prompt(doc: dict[str, Any], env: dict[str, str]) -> dict[str, Any]:
     """Return a copy of `doc` with `${VAR}` / `$VAR` substituted in the prompt.
 
     Goose itself does NOT shell-expand env vars inside recipe prompt prose
@@ -225,12 +228,24 @@ class _BlockStyleDumper(yaml.SafeDumper):
     (`{% raw %}` / `{% endraw %}`). goose's YAML parser reconstructs that
     fold in a way that mangles the tag, so MiniJinja never sees the raw-block
     terminator and fails with "unexpected end of raw block". A literal block
-    scalar preserves the prompt verbatim with no folding, so the tags the
-    framework wraps around every pasted context block survive intact.
+    scalar preserves the prompt verbatim with no folding.
+
+    But literal style is not always available: PyYAML silently falls back to
+    double-quoted (and folds again) when a scalar has a line with trailing
+    whitespace, which pasted context routinely does (a config line like
+    `location_constraint = `). So the literal representer is only half the fix;
+    the guarantee is `width` on the dump call below set high enough that no
+    scalar folds in EITHER style. Both are applied together.
     """
 
 
-def _literal_str_representer(dumper: yaml.Dumper, data: str):
+# Effectively disable PyYAML's column-based line folding. Folding (not style)
+# is what splits the template tags; a huge width keeps every scalar on one line
+# even when literal-block style is unavailable.
+_NO_FOLD_WIDTH = 1_000_000_000
+
+
+def _literal_str_representer(dumper: yaml.SafeDumper, data: str) -> yaml.ScalarNode:
     style = "|" if "\n" in data else None
     return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
 
@@ -238,28 +253,39 @@ def _literal_str_representer(dumper: yaml.Dumper, data: str):
 _BlockStyleDumper.add_representer(str, _literal_str_representer)
 
 
+def _write_rendered(doc: dict[str, Any]) -> str:
+    """Write a rendered recipe to a temp file; return its path.
+
+    The single home of the anti-fold dump: _BlockStyleDumper plus
+    _NO_FOLD_WIDTH together guarantee no scalar ever folds (see the
+    dumper's docstring). Every rendered recipe goes through here so the
+    guarantee cannot drift between call sites.
+    """
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".rendered.yaml",
+        delete=False,
+    )
+    yaml.dump(doc, tmp, Dumper=_BlockStyleDumper, sort_keys=False,
+              default_flow_style=False, allow_unicode=True, width=_NO_FOLD_WIDTH)
+    tmp.close()
+    return tmp.name
+
+
 def render_recipe_with_context(
-    recipe: dict | str | Path,
+    recipe: dict[str, Any],
     extra_env: dict[str, str],
     *,
     environment: Any = None,
-) -> Optional[str]:
+) -> str:
     """Resolve a recipe's context: block; write a rendered temp file.
 
-    Returns the path to the temp file (str) if a context: block was
-    present and rendered, or None if the recipe has no context: block
-    (caller can use the original recipe path unchanged).
-
-    `recipe` may be a parsed dict (e.g. the merged result of recipe_merge),
-    a path to a yaml file, or a Path object.
+    Takes the parsed recipe dict (the merged result of recipe_merge) and
+    returns the path to the rendered temp file goose should run. The
+    context: block (if any) is consumed into the prompt; the recipe's own
+    prompt prose is env-substituted either way.
     """
-    if isinstance(recipe, (str, Path)):
-        path = Path(recipe)
-        with open(path, "r") as f:
-            doc = yaml.safe_load(f) or {}
-    else:
-        doc = recipe
-
+    doc = recipe
     env = {**os.environ, **(extra_env or {})}
     context_block = doc.get("context")
 
@@ -285,18 +311,38 @@ def render_recipe_with_context(
         doc = {**doc, "prompt": block_text + "\n\n" + substituted_prompt}
         doc.pop("context", None)  # consumed; goose doesn't need to see it
     else:
-        if not _prompt_needs_substitution(doc.get("prompt", "")):
-            # Nothing to render, nothing to substitute — caller can use the
-            # original recipe file unchanged.
-            return None
         doc = substitute_env_in_prompt(doc, env)
 
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".rendered.yaml",
-        delete=False,
+    return _write_rendered(doc)
+
+
+@contextlib.contextmanager
+def prepared_recipe(recipe_path: Path,
+                    extra_env: dict[str, str] | None,
+                    *,
+                    environment: Any = None,
+                    local_path: Path | None = None,
+                    overlay_paths: list[Path] | None = None) -> Iterator[str]:
+    """Yield the effective recipe path: overlay-merged + context-rendered.
+
+    Steps:
+        1. Merge base + local + CLI overlays into one dict (recipe_merge).
+        2. Resolve the context: block and env-substitute the prompt.
+        3. Write the rendered temp YAML goose runs; yield its path.
+
+    Cleanup happens on context exit unless GOOSER_KEEP_RENDERED=1 is set.
+    """
+    merged = load_layered_recipe(
+        recipe_path,
+        local_path=local_path,
+        overlay_paths=overlay_paths,
     )
-    yaml.dump(doc, tmp, Dumper=_BlockStyleDumper, sort_keys=False,
-              default_flow_style=False, allow_unicode=True)
-    tmp.close()
-    return tmp.name
+    rendered = render_recipe_with_context(merged, extra_env or {}, environment=environment)
+    try:
+        yield rendered
+    finally:
+        if not os.environ.get("GOOSER_KEEP_RENDERED"):
+            try:
+                os.unlink(rendered)
+            except OSError:
+                pass

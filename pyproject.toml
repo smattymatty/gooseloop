@@ -13,7 +13,7 @@ authors = [{ name = "Storm Developments" }]
 keywords = ["goose", "llm", "pipeline", "agent", "automation"]
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -23,14 +23,26 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = [
+    "pytest>=7",
+    "minijinja>=2",
+    "mypy>=1.13",
+    "types-PyYAML>=6.0",
+]
 
 [project.scripts]
 gooseloop = "gooseloop.__main__:main"
 
 [project.urls]
-Source = "https://gitforge.ca/storm/gooseloop"
+Source = "https://github.com/smattymatty/gooseloop"
 
 [tool.setuptools.packages.find]
 include = ["gooseloop*"]
 exclude = ["tests*", "engines*"]
+
+[tool.mypy]
+# Strict covers the framework package only. Engines are a teaching set
+# users copy and delete (see CLAUDE.md); tests stay pytest-plain.
+strict = true
+python_version = "3.11"
+files = ["gooseloop"]

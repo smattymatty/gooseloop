@@ -1,6 +1,7 @@
 """Footers: per-call summary line and per-session multi-line wrap-up."""
 
 from pathlib import Path
+from typing import Any
 
 from .text import Color, colored
 
@@ -36,7 +37,7 @@ def print_session_footer(elapsed: float,
                          actions_ran: int,
                          actions_skipped: int,
                          outputs: list[str],
-                         operator_actions: list[dict] | None = None,
+                         operator_actions: list[dict[str, Any]] | None = None,
                          session_dir: Path | None = None) -> None:
     """Multi-line summary at end of a begin_loop() pass."""
     title = f"═══ session complete · {_fmt_duration(elapsed)} ═══"

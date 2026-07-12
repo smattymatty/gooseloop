@@ -12,9 +12,11 @@ Public surface:
     LooperConfig       - resolved gooseloop.toml as a value object
     predicates         - success_predicate factories
     protocol           - ReviewOutput / OperatorAction / RoutingEntry types
+    toolkit            - stdlib-only engine helpers (Source, fetch_url, state io)
+    artifact           - versioned artifact contracts for engine composition
 """
 
-from . import predicates, protocol
+from . import artifact, predicates, protocol, toolkit
 from .branch_policy import BranchPolicy
 from .config import LooperConfig
 from .engine import Engine
@@ -31,8 +33,10 @@ __all__ = [
     "LooperConfig",
     "Phase",
     "Pipeline",
+    "artifact",
     "predicates",
     "protocol",
+    "toolkit",
 ]
 
 __version__ = "0.1.0"

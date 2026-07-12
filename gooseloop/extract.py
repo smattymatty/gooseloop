@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from .text import strip_ansi
 
@@ -41,7 +41,7 @@ DELIVERABLE_END = "<<<END_DELIVERABLE>>>"
 @dataclass(frozen=True)
 class Extracted:
     """A parsed deliverable plus which recognizer matched."""
-    payload: dict
+    payload: dict[str, Any]
     recognizer: str  # "canonical" | "angle_sentinel" | "markdown_fence"
 
     @property
@@ -148,7 +148,7 @@ def extract_json_with_provenance(text: str) -> Optional[Extracted]:
     return None
 
 
-def _try_parse(candidate: Optional[str]) -> Optional[dict]:
+def _try_parse(candidate: Optional[str]) -> Optional[dict[str, Any]]:
     if candidate is None:
         return None
     balanced = _first_balanced_object(candidate)
@@ -161,7 +161,7 @@ def _try_parse(candidate: Optional[str]) -> Optional[dict]:
     return payload if isinstance(payload, dict) else None
 
 
-def extract_json(text: str) -> Optional[dict]:
+def extract_json(text: str) -> Optional[dict[str, Any]]:
     """Backwards-compatible thin wrapper for callers that don't need provenance."""
     result = extract_json_with_provenance(text)
     return result.payload if result else None

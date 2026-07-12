@@ -275,8 +275,8 @@ def test_probe_url_network_error(monkeypatch):
 
 def test_fetch_url_no_strip_keeps_markup(monkeypatch):
     _patch_urls(monkeypatch, {"https://x.com/s.xml": (b"<loc>https://x.com/a</loc>", {"Content-Type": "application/xml"})})
-    text, _, _, err = fetch_url("https://x.com/s.xml", strip=False)
-    assert err is None and "<loc>" in text
+    r = fetch_url("https://x.com/s.xml", strip=False)
+    assert r.ok and "<loc>" in r.text
 
 
 # ---- discovery / filtering ---------------------------------------

@@ -27,7 +27,7 @@ Dynamic branching (one review phase producing N follow-up branches) is expressed
 
 **Good:**
 
-- Looper has zero knowledge of prospects, scoring, or any Storm concept. Extracting it as a standalone OSS package is a clean cut.
+- Looper has zero knowledge of prospects, scoring, or any business-specific concept. Extracting it as a standalone OSS package is a clean cut.
 - Engines unit-test their `pipeline()` and each Phase's `post_process` as pure functions, without needing goose. Highest testability we can get given the LLM-in-the-loop reality.
 - New engines (`StormSecurity`, third-party) are additive — they ship their own `pipeline()` and recipes, no Looper changes needed.
 - The Phase queue is a single point where retry, logging, and footer accounting happen, regardless of engine.

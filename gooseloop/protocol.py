@@ -1,6 +1,6 @@
 """TypedDicts and validation for the gooseloop review protocol.
 
-See gooseloop/PROTOCOL.md for the canonical contract and ADR 0007 for
+See PROTOCOL.md for the canonical contract and ADR 0007 for
 the rationale. The framework reads these keys; engines may add arbitrary
 extension keys to any of these structures.
 
@@ -90,7 +90,7 @@ class ProtocolVersionError(RuntimeError):
     """Raised when a review declares a major version the framework does not support."""
 
 
-def validate_review(payload: dict) -> ReviewOutput:
+def validate_review(payload: dict[str, Any]) -> ReviewOutput:
     """Canonicalise + validate a review payload.
 
     Returns a NEW dict with synonyms canonicalised, defaulted lists
@@ -143,13 +143,13 @@ def _normalise_operator_actions(entries: Any) -> list[OperatorAction]:
         if isinstance(entry, str):
             action = entry.strip()
             if action:
-                out.append({"action": action, "why": ""})  # type: ignore[typeddict-item]
+                out.append({"action": action, "why": ""})
             continue
         if isinstance(entry, dict):
             action = str(entry.get("action", "")).strip()
             if not action:
                 continue
-            normalised: OperatorAction = {  # type: ignore[typeddict-item]
+            normalised: OperatorAction = {
                 "action": action,
                 "why": str(entry.get("why", "")),
             }
@@ -171,9 +171,10 @@ def _normalise_routing(entries: Any) -> list[RoutingEntry]:
         recipe = entry.get("recipe")
         if not isinstance(recipe, str) or not recipe.strip():
             continue
-        normalised: RoutingEntry = {  # type: ignore[typeddict-item]
+        params = entry.get("params")
+        normalised: RoutingEntry = {
             "recipe": recipe.strip(),
-            "params": entry.get("params") if isinstance(entry.get("params"), dict) else {},
+            "params": params if isinstance(params, dict) else {},
             "reason": str(entry.get("reason", "")),
         }
         out.append(normalised)

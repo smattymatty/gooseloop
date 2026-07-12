@@ -1,6 +1,6 @@
 """Core data types: Phase, Pipeline, Context.
 
-See ADRs 0001, 0006, 0007 and gooseloop/PROTOCOL.md for the contracts these
+See ADRs 0001, 0006, 0007 and PROTOCOL.md for the contracts these
 types implement. The Pipeline is the bookend dataclass with named review /
 body / summary slots; Context carries typed methods for body phases to
 extend the session ledger.

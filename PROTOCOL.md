@@ -257,7 +257,7 @@ Shape-specific contracts live under `gooseloop.contrib.*`. Two ship initially:
   engines. Adds `handoff_dir`, `target_repo`, `dev_up_probe`, etc.
 
 Concrete environments subclass either bare `Environment` (no obligations) or
-a contrib mixin (inherits its contract). See [ADR 0005](../docs/adr/0005-environment-abc-narrows-contrib-mixins.md).
+a contrib mixin (inherits its contract). See [ADR 0005](docs/adr/0005-environment-abc-narrows-contrib-mixins.md).
 
 Recipes call any concrete method via `env_method:<name>` regardless of mixin
 lineage; the source kind dispatches by name on the live instance.
@@ -284,6 +284,7 @@ with a clear error.
 ## 10. Where things live
 
 ```
+PROTOCOL.md                  # this file, at the repo root beside the README
 gooseloop/                   # the framework package (the OSS extraction target)
 ├── __init__.py             # public surface
 ├── __main__.py             # `gooseloop` CLI entry
@@ -296,11 +297,12 @@ gooseloop/                   # the framework package (the OSS extraction target)
 ├── context_prepend.py      # recipe render-time input resolution
 ├── recipe_merge.py         # overlay merge engine (per ADR 0008)
 ├── predicates.py           # success_predicate factories
+├── toolkit.py              # stdlib-only engine helpers (Source, fetch, state io)
+├── artifact.py             # versioned artifact contracts (see §12)
 ├── session.py              # session folder management
 ├── footer.py               # per-call and per-session footers
 ├── text.py                 # ANSI, banners, JSON extraction
 ├── config.py               # gooseloop.toml loader (LooperConfig)
-├── PROTOCOL.md             # this file
 └── contrib/
     ├── __init__.py
     ├── customer_pipeline.py    # CustomerPipelineEnvironment ABC
@@ -341,12 +343,59 @@ methods your recipes call via `env_method:`.
 fully-merged recipe. The looper writes a temp file with the rendered context
 block; set `GOOSER_KEEP_RENDERED=1` to preserve it on disk.
 
+## 12. Engine composition
+
+Two engines cooperate by sharing an artifact on disk, never by importing each
+other. The rule follows ADR 0004: an upstream engine's output is something the
+downstream loop *has access to*, so it enters the downstream loop as a noun on
+its Environment, exactly like any other project file. Engines stay strangers;
+the artifact is the interface. The canonical shape (proven by the
+pain-harvest / site-pitch pair):
+
+```
+stage A (harvester)   drafts candidate blocks into its output dir
+operator              reviews each draft, appends approved blocks to the
+                      sealed artifact by hand
+stage B (consumer)    reads the sealed artifact via its Environment
+```
+
+The rules that make this a contract rather than a happy accident:
+
+- **The artifact is versioned.** The producing side stamps a `schema_version`
+  key into the file; the consuming side checks it at read time with
+  `gooseloop.artifact.check_artifact_version()`. Same major is compatible
+  (additive changes bump the minor). A different major or an unparseable
+  version is refused loudly with `ArtifactVersionError`; a missing version is
+  read anyway with a recorded problem nudging the operator to stamp the file
+  (fail-safe runs in the KEEP direction, so hand-sealed pre-versioning
+  artifacts keep working).
+
+- **The seam is operator-gated by default.** Upstream proposes, the operator
+  seals, downstream consumes only sealed data. An unsealed artifact flowing
+  agent-to-agent turns one model's hallucination into the next model's ground
+  truth. Automate a seam only after deciding, explicitly, that it does not
+  need a human gate.
+
+- **Contract tests pin both sides of the seam.** The producer's suite asserts
+  its rendered drafts parse and validate against the artifact schema. The
+  consumer's suite reads fixture artifacts, never live producer output.
+  Either engine may then change internals freely; the artifact holds.
+
+- **Sequencing stays outside the framework.** Run the stages as separate
+  `gooseloop` invocations from a shell script, make target, or cron. Each
+  engine keeps its own full review -> body -> summary pass; pipelines are
+  never merged, so the ADR 0006 ordering guarantee holds per stage.
+
+Shared mechanics for engine authors (Source parsing, hardened URL fetch,
+paste caps, slug safety, JSON state io) live in `gooseloop.toolkit`, extracted
+from the engines that proved the need.
+
 ---
 
 This protocol is canonical. Disagreements between this document and the code
 are bugs in the code.
 
-For the design history, see the ADRs in [`../docs/adr/`](../docs/adr/) —
+For the design history, see the ADRs in [`docs/adr/`](docs/adr/) —
 particularly 0001 (Engine returns Pipeline), 0004 (Engine + Environment as
 siblings), 0005 (Environment ABC narrows), 0006 (Pipeline named slots), 0007
 (Review output schema + operator_actions ledger), and 0008 (recipe overlay

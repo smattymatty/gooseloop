@@ -50,7 +50,7 @@ Required keys: `protocol_version`, `status`, `summary`, `insights`, `routing`, `
 - `"partial"` — review couldn't finish (e.g. missing input); operator should re-run after fixing.
 - `"error"` — review failed for a reason the model could detect (e.g. invalid handoff structure). Body phases skip.
 
-`routing[]` is what the framework hands to `Engine.branch_policies` to build body phases (per the BranchPolicy registry — see `gooseloop/PROTOCOL.md`).
+`routing[]` is what the framework hands to `Engine.branch_policies` to build body phases (per the BranchPolicy registry — see `PROTOCOL.md`).
 
 ### operator_actions ledger
 

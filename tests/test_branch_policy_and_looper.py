@@ -1,8 +1,9 @@
 """Smoke tests for the looper that don't require the goose binary.
 
-The looper invokes goose via run_goose_with_retry; these tests monkey-patch
-that to feed canned outputs into the looper and verify the framework
-correctly:
+The looper prepares recipes via prepared_recipe and invokes goose via
+run_goose_with_retry; these tests monkey-patch both seams (preparation
+would otherwise read recipe files that don't exist) to feed canned
+outputs into the looper and verify the framework correctly:
 
   - parses the review's deliverable JSON
   - validates the schema
@@ -14,6 +15,7 @@ correctly:
 
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 from typing import Any
@@ -107,13 +109,25 @@ class _CannedGoose:
 
     def __call__(self, recipe_path: str, model: str, extra_env=None, *,
                  max_retries=6, base_delay=5, success_predicate=None,
-                 label=None, environment=None,
-                 local_path=None, overlay_paths=None) -> str:
+                 label=None) -> str:
         self.calls.append(recipe_path)
         for stem, output in self.mapping.items():
             if stem in recipe_path:
                 return output
         return ""
+
+
+@contextlib.contextmanager
+def _unprepared(recipe_path, extra_env=None, **kwargs):
+    """Bypass overlay merge + context render; these tests' recipe paths
+    are fake and preparation would try to read them from disk."""
+    yield str(recipe_path)
+
+
+def _patch_goose(monkeypatch, run) -> None:
+    """Patch the looper's two invocation seams: preparation and goose."""
+    monkeypatch.setattr("gooseloop.looper.prepared_recipe", _unprepared)
+    monkeypatch.setattr("gooseloop.looper.run_goose_with_retry", run)
 
 
 @pytest.fixture
@@ -123,7 +137,7 @@ def patched_looper(monkeypatch):
         "greet": GREET_OUTPUT,
         "summary.yaml": SUMMARY_OUTPUT,
     })
-    monkeypatch.setattr("gooseloop.looper.run_goose_with_retry", canned)
+    _patch_goose(monkeypatch, canned)
     return canned
 
 
@@ -292,7 +306,7 @@ def test_review_error_status_skips_body_and_summary(tmp_path, monkeypatch):
         "greet": GREET_OUTPUT,
         "summary.yaml": SUMMARY_OUTPUT,
     })
-    monkeypatch.setattr("gooseloop.looper.run_goose_with_retry", canned)
+    _patch_goose(monkeypatch, canned)
     looper = GooseLooper(
         engine=_RecordingEngine(),
         environment=_SilentEnv(),
@@ -319,8 +333,7 @@ def test_review_default_predicate_rejects_truncated_output(tmp_path, monkeypatch
     calls = []
     def fake_run(recipe_path, model, extra_env=None, *,
                  max_retries=6, base_delay=5, success_predicate=None,
-                 label=None, environment=None,
-                 local_path=None, overlay_paths=None):
+                 label=None):
         calls.append(recipe_path)
         # Simulate retry behaviour of the real run_goose_with_retry:
         # the predicate fires per attempt and gates retry.
@@ -328,7 +341,7 @@ def test_review_default_predicate_rejects_truncated_output(tmp_path, monkeypatch
             raise RuntimeError("simulated max-retries exhausted")
         return truncated
 
-    monkeypatch.setattr("gooseloop.looper.run_goose_with_retry", fake_run)
+    _patch_goose(monkeypatch, fake_run)
 
     looper = GooseLooper(
         engine=_RecordingEngine(),
@@ -348,7 +361,7 @@ def test_review_missing_sentinels_marks_error(tmp_path, monkeypatch):
         "greet": GREET_OUTPUT,
         "summary.yaml": SUMMARY_OUTPUT,
     })
-    monkeypatch.setattr("gooseloop.looper.run_goose_with_retry", canned)
+    _patch_goose(monkeypatch, canned)
     looper = GooseLooper(
         engine=_RecordingEngine(),
         environment=_SilentEnv(),
@@ -376,7 +389,7 @@ def test_review_partial_runs_body_but_skips_summary(tmp_path, monkeypatch):
         "review.yaml": partial_review,
         "summary.yaml": SUMMARY_OUTPUT,
     })
-    monkeypatch.setattr("gooseloop.looper.run_goose_with_retry", canned)
+    _patch_goose(monkeypatch, canned)
     looper = GooseLooper(
         engine=_RecordingEngine(),
         environment=_SilentEnv(),

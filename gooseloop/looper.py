@@ -27,9 +27,10 @@ from typing import Any, Callable, Optional
 
 from .branch_policy import BranchPolicy
 from .config import LooperConfig
+from .context_prepend import prepared_recipe
 from .engine import Engine
 from .environment import Environment
-from .footer import print_session_footer
+from .footer import print_session_footer, recipe_label
 from .goose import run_goose_with_retry
 from .phase import Context, Phase, Pipeline
 from .predicates import file_nonempty
@@ -401,7 +402,7 @@ class GooseLooper:
         post = None
         if policy.output_path is not None:
             captured_params = dict(params)
-            def post(_out: str, ctx: Context, _p=captured_params) -> None:
+            def post(_out: str, ctx: Context, _p: dict[str, Any] = captured_params) -> None:
                 op = policy.output_path(_p) if policy.output_path else None
                 if op is not None:
                     ctx.record_output(op)
@@ -410,10 +411,13 @@ class GooseLooper:
         label = f"{recipe}[{params.get('slug') or 'branch'}]" \
             if params.get("slug") else None
 
+        def build_env(_ctx: Context, _e: dict[str, str] = param_env) -> dict[str, str]:
+            return dict(_e)
+
         return Phase(
             name=f"branch:{recipe}",
             recipe_path=str(recipe_path),
-            build_env=lambda _ctx, _e=param_env: dict(_e),
+            build_env=build_env,
             success_predicate=predicate,
             post_process=post,
             skip_if=skip,
@@ -513,22 +517,25 @@ class GooseLooper:
 
     def _invoke_recipe(self, phase: Phase, ctx: Context, *,
                        overlays: list[Path] | None = None) -> str | None:
-        phase_env = phase.build_env(ctx) if phase.build_env else {}
+        phase_env = phase.build_env(ctx)
         extra_env = {**ctx.base_env, **phase_env}
-        local_path = _local_overlay_for(Path(phase.recipe_path))
         try:
-            return run_goose_with_retry(
-                phase.recipe_path,
-                self.model,
-                extra_env=extra_env,
-                max_retries=self.config.retry.max_retries,
-                base_delay=self.config.retry.base_delay,
-                success_predicate=phase.success_predicate,
-                label=phase.label,
+            with prepared_recipe(
+                Path(phase.recipe_path),
+                extra_env,
                 environment=self.environment,
-                local_path=local_path,
+                local_path=_local_overlay_for(Path(phase.recipe_path)),
                 overlay_paths=overlays or [],
-            )
+            ) as effective_path:
+                return run_goose_with_retry(
+                    effective_path,
+                    self.model,
+                    extra_env=extra_env,
+                    max_retries=self.config.retry.max_retries,
+                    base_delay=self.config.retry.base_delay,
+                    success_predicate=phase.success_predicate,
+                    label=phase.label or recipe_label(phase.recipe_path),
+                )
         except RuntimeError as e:
             print(colored(f"\nPhase {phase.name} failed: {e}", Color.RED), file=sys.stderr)
             if ctx.session_dir:

@@ -50,16 +50,12 @@ from __future__ import annotations
 
 import glob as globmod
 import hashlib
-import json
 import os
 import re
 import subprocess
 import tomllib
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urljoin, urlparse
@@ -72,44 +68,33 @@ from gooseloop import (
     Pipeline,
     predicates,
 )
+from gooseloop.toolkit import (
+    FetchResult,
+    Source,
+    cap,
+    fetch_url as _toolkit_fetch,
+    html_to_text,
+    load_state,
+    parse_source,
+    parse_sources,
+    safe_filename,
+    save_state as _save_state,
+)
 
 
 _HERE = Path(__file__).resolve().parent
 
-_MAX_PASTE_CHARS = 60_000
-_HTTP_TIMEOUT = 15
-_HTTP_MAX_BYTES = 5_000_000
 _USER_AGENT = "doc-drift/1.0 (+https://stormdevelopments.ca)"
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
 
-# ---- sources: a file path or a live URL --------------------------
-
-
-@dataclass(frozen=True)
-class Source:
-    kind: str   # "file" | "url"
-    value: str  # absolute path for files; the URL string for urls
-
-    @property
-    def is_url(self) -> bool:
-        return self.kind == "url"
-
-
-def parse_source(raw: str, base: Path) -> Source:
-    raw = raw.strip()
-    if _URL_RE.match(raw):
-        return Source("url", raw)
-    path = Path(raw).expanduser()
-    resolved = path if path.is_absolute() else (base / path).resolve()
-    return Source("file", str(resolved))
+# ---- sources: Source/parse_source come from gooseloop.toolkit ----
 
 
 def parse_canonical(raw, base: Path) -> tuple[Source, ...]:
     """Canonical may be a single source or a list (the derived must agree with
     all of them). Returns a tuple of Sources."""
-    items = raw if isinstance(raw, list) else [raw]
-    return tuple(parse_source(str(x), base) for x in items if str(x).strip())
+    return parse_sources(raw, base)
 
 
 # ---- the map: static pairs + dynamic collections -----------------
@@ -267,75 +252,26 @@ def _content_rev(path: Path) -> Rev:
     return Rev("h:" + hashlib.sha256(data).hexdigest()[:12], int(path.stat().st_mtime), True)
 
 
-def fetch_url(url: str, *, strip: bool = True) -> tuple[Optional[str], Optional[str], Optional[int], Optional[str]]:
-    """Fetch a URL. Returns (text, etag, last_modified_unix, error).
-
-    strip=True normalizes HTML to visible text (stable for hashing and readable
-    for the model); strip=False returns the body as-is (for sitemap XML / href
-    scraping). On any network or HTTP error returns (None, None, None, reason).
-    """
-    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
-            raw = resp.read(_HTTP_MAX_BYTES)
-            ctype = resp.headers.get("Content-Type", "")
-            last_mod = resp.headers.get("Last-Modified")
-            etag = resp.headers.get("ETag")
-    except urllib.error.HTTPError as e:
-        return None, None, None, f"HTTP {e.code} fetching {url}"
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        return None, None, None, f"could not fetch {url}: {e}"
-
-    text = raw.decode("utf-8", errors="replace")
-    if strip and ("html" in ctype.lower() or _looks_like_html(text)):
-        text = html_to_text(text)
-    return text, etag, _http_date_to_unix(last_mod), None
+def fetch_url(url: str, *, strip: bool = True) -> FetchResult:
+    """gooseloop.toolkit.fetch_url with this engine's User-Agent."""
+    return _toolkit_fetch(url, strip=strip, user_agent=_USER_AGENT)
 
 
 def probe_url(url: str) -> Rev:
-    text, etag, ts, err = fetch_url(url, strip=True)
-    if text is None:
-        return Rev("", None, False, err or f"could not fetch {url}")
-    token = f"etag:{_clean_etag(etag)}" if etag else "h:" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
-    return Rev(token, ts, True)
+    r = fetch_url(url, strip=True)
+    if r.text is None:
+        return Rev("", None, False, r.error or f"could not fetch {url}")
+    token = (f"etag:{_clean_etag(r.etag)}" if r.etag
+             else "h:" + hashlib.sha256(r.text.encode("utf-8")).hexdigest()[:12])
+    return Rev(token, r.last_modified_unix, True)
 
 
 def _clean_etag(etag: str) -> str:
     return etag.strip().lstrip("W/").strip('"')
 
 
-def _looks_like_html(text: str) -> bool:
-    head = text[:512].lower()
-    return "<html" in head or "<!doctype html" in head
-
-
-_SCRIPT_STYLE_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
-_TAG_RE = re.compile(r"<[^>]+>")
-_WS_RE = re.compile(r"[ \t\f\v]+")
-_BLANKLINES_RE = re.compile(r"\n{3,}")
 _HREF_RE = re.compile(r"href=[\"']([^\"']+)[\"']", re.IGNORECASE)
 _LOC_RE = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>", re.IGNORECASE)
-
-
-def html_to_text(html: str) -> str:
-    """Minimal, dependency-free HTML→text: drop script/style, strip tags, tidy."""
-    import html as _html
-    text = _SCRIPT_STYLE_RE.sub(" ", html)
-    text = _TAG_RE.sub("\n", text)
-    text = _html.unescape(text)
-    text = _WS_RE.sub(" ", text)
-    text = "\n".join(line.strip() for line in text.splitlines())
-    return _BLANKLINES_RE.sub("\n\n", text).strip()
-
-
-def _http_date_to_unix(value: Optional[str]) -> Optional[int]:
-    if not value:
-        return None
-    try:
-        dt = parsedate_to_datetime(value)
-    except (TypeError, ValueError):
-        return None
-    return int(dt.timestamp()) if dt is not None else None
 
 
 def _combine_canon(revs: list[Rev]) -> Rev:
@@ -425,7 +361,7 @@ class DocDriftEnvironment(Environment):
         self._triage: Optional[list[TriageRow]] = None
         self._collection_problems: list[dict] = []
         # url -> (text, etag, ts, error); one fetch per URL per run.
-        self._fetch_cache: dict[str, tuple] = {}
+        self._fetch_cache: dict[str, FetchResult] = {}
 
     def env_vars(self) -> dict[str, str]:
         return {
@@ -535,23 +471,24 @@ class DocDriftEnvironment(Environment):
     def _probe(self, source: Source) -> Rev:
         if not source.is_url:
             return doc_rev(Path(source.value))
-        text, etag, ts, err = self._cached_fetch(source.value)
-        if text is None:
-            return Rev("", None, False, err or f"could not fetch {source.value}")
-        token = f"etag:{_clean_etag(etag)}" if etag else "h:" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
-        return Rev(token, ts, True)
+        r = self._cached_fetch(source.value)
+        if r.text is None:
+            return Rev("", None, False, r.error or f"could not fetch {source.value}")
+        token = (f"etag:{_clean_etag(r.etag)}" if r.etag
+                 else "h:" + hashlib.sha256(r.text.encode("utf-8")).hexdigest()[:12])
+        return Rev(token, r.last_modified_unix, True)
 
-    def _cached_fetch(self, url: str) -> tuple:
+    def _cached_fetch(self, url: str) -> FetchResult:
         if url not in self._fetch_cache:
             self._fetch_cache[url] = fetch_url(url, strip=True)
         return self._fetch_cache[url]
 
     def _source_text(self, source: Source) -> str:
         if source.is_url:
-            text, _, _, err = self._cached_fetch(source.value)
-            if text is None:
-                return f"(could not fetch {source.value}: {err})"
-            return _cap(text)
+            r = self._cached_fetch(source.value)
+            if r.text is None:
+                return f"(could not fetch {source.value}: {r.error})"
+            return cap(r.text)
         return _read_capped(Path(source.value))
 
     # ---- review content loader (parameterless => env_method ok) --
@@ -737,18 +674,18 @@ def _slug_for_file(path: str, root: str) -> str:
 
 
 def _discover_sitemap(sitemap_url: str, match: re.Pattern) -> tuple[list[str], Optional[str]]:
-    text, _, _, err = fetch_url(sitemap_url, strip=False)
-    if text is None:
-        return [], err
-    urls = _filter_urls(_LOC_RE.findall(text), match, sitemap_url)
+    r = fetch_url(sitemap_url, strip=False)
+    if r.text is None:
+        return [], r.error
+    urls = _filter_urls(_LOC_RE.findall(r.text), match, sitemap_url)
     return urls, None
 
 
 def _discover_index(index_url: str, match: re.Pattern) -> tuple[list[str], Optional[str]]:
-    text, _, _, err = fetch_url(index_url, strip=False)
-    if text is None:
-        return [], err
-    absolute = [urljoin(index_url, h) for h in _HREF_RE.findall(text)]
+    r = fetch_url(index_url, strip=False)
+    if r.text is None:
+        return [], r.error
+    absolute = [urljoin(index_url, h) for h in _HREF_RE.findall(r.text)]
     return _filter_urls(absolute, match, index_url), None
 
 
@@ -779,44 +716,16 @@ def _empty_state() -> dict:
 
 
 def _load_state(path: Path) -> dict:
-    if not path.exists():
-        return _empty_state()
-    try:
-        with open(path, "rb") as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return _empty_state()
-    if not isinstance(data, dict):
-        return _empty_state()
-    data.setdefault("pairs", {})
-    data.setdefault("map_health", [])
-    return data
-
-
-def _save_state(path: Path, state: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, sort_keys=True)
-        f.write("\n")
-
-
-_SAFE_RE = re.compile(r"[^a-zA-Z0-9._-]+")
+    return load_state(path, _empty_state())
 
 
 def _safe_filename(text: str) -> str:
-    cleaned = _SAFE_RE.sub("-", text).strip("-")
-    return cleaned or "pair"
-
-
-def _cap(text: str) -> str:
-    if len(text) > _MAX_PASTE_CHARS:
-        return f"{text[:_MAX_PASTE_CHARS]}\n\n(... truncated at {_MAX_PASTE_CHARS} chars ...)"
-    return text
+    return safe_filename(text, fallback="pair")
 
 
 def _read_capped(path: Path) -> str:
     try:
-        return _cap(path.read_text(encoding="utf-8", errors="replace"))
+        return cap(path.read_text(encoding="utf-8", errors="replace"))
     except OSError as e:
         return f"(could not read {path}: {e})"
 

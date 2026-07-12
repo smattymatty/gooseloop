@@ -8,6 +8,11 @@ session bookkeeping, recipe overlay merging, and a typed session ledger.
 
 It is generic. The framework knows nothing about your domain. Engines plug in.
 
+gooseloop is an independent project built on Block's
+[goose](https://block.github.io/goose/) (Apache 2.0) as its layer of execution
+primitives: recipes are goose recipes, and every phase is a goose CLI call the
+engine makes. gooseloop is not affiliated with or endorsed by Block, Inc.
+
 ## Install
 
 ```
@@ -35,7 +40,7 @@ Three primitives:
   Body phases run in queue order (cadence phases + review-spawned branches).
   Summary runs last and reads the final ledger.
 
-The contract is documented in [`gooseloop/PROTOCOL.md`](gooseloop/PROTOCOL.md).
+The contract is documented in [`PROTOCOL.md`](PROTOCOL.md).
 The design history lives in [`docs/adr/`](docs/adr/).
 
 ## Five minute tour
@@ -89,7 +94,7 @@ Recipes compose docker-compose style. The looper resolves layers in this order:
 
 Inspect the merged result with `gooseloop recipe --resolve <name>`.
 
-Merge rules table is in [PROTOCOL.md §6](gooseloop/PROTOCOL.md).
+Merge rules table is in [PROTOCOL.md §6](PROTOCOL.md).
 
 ## Contrib mixins
 
@@ -117,7 +122,7 @@ retry tuning, sessions dir.
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+Apache 2.0, matching the goose layer it builds on. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
 
 ## Provenance
 

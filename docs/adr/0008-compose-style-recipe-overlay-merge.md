@@ -69,7 +69,7 @@ Goose itself sees one resolved recipe per phase invocation (the framework writes
 1. Implement `gooseloop/recipe_merge.py` with one public function: `merge_recipes(base: dict, *overlays: dict) -> dict`. Pure; recursive; dispatches per the rules table.
 2. Implement `gooseloop/cli.py` (or extend `__main__.py`) with `gooseloop recipe --resolve <name>` and the `--review-overlay` / `--summary-overlay` flags.
 3. Update the looper to compose layers before handing the recipe to `_prepared_recipe` (which already writes a temp file).
-4. Document the rules table in `gooseloop/PROTOCOL.md`.
+4. Document the rules table in `PROTOCOL.md`.
 5. Tests in `tests/test_recipe_merge.py`: one test per row of the rules table, plus the removal sentinel and the layer-precedence cases.
 
 ## Alternatives considered
