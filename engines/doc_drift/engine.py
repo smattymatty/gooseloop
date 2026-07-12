@@ -84,7 +84,7 @@ from gooseloop.toolkit import (
 
 _HERE = Path(__file__).resolve().parent
 
-_USER_AGENT = "doc-drift/1.0 (+https://stormdevelopments.ca)"
+_USER_AGENT = "doc-drift/1.0 (+https://github.com/smattymatty/gooseloop)"
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
 

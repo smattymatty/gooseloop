@@ -64,7 +64,7 @@ prompt: |
   `# In sync: ${PAIR_ID}` heading and a sentence saying so. Propose no edits.
   A recorded false positive is fine; a fabricated edit is not.
 
-  Storm voice for any prose: no em-dashes (use a comma, period, or colon), no
+  Voice for any prose: no em-dashes (use a comma, period, or colon), no
   emojis, no filler. The corrected text you propose must match the canonical
   exactly, not your paraphrase of it. Ensure ${OUTPUT_PATH}'s parent exists.
 

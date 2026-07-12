@@ -32,7 +32,7 @@ prompt: |
   to [] — the engine raises the real operator actions after the drafts are
   written and their verdicts are known.
 
-  Storm voice: no em-dashes, no emojis, no filler.
+  Voice: no em-dashes, no emojis, no filler.
 
 settings:
   goose_provider: "openrouter"

@@ -5,7 +5,7 @@
 
 ## Context
 
-Engines need a way to be looked up by string name for CLI use (`gooseloop run storm-customer`) and config (`engine = "storm-customer"` in `gooseloop.toml`). For programmatic use, passing the class directly is sufficient and bypasses any registry.
+Engines need a way to be looked up by string name for CLI use (`gooseloop run customer-acquisition`) and config (`engine = "customer-acquisition"` in `gooseloop.toml`). For programmatic use, passing the class directly is sufficient and bypasses any registry.
 
 The canonical Python pattern for plugin discovery is `[project.entry-points]` in `pyproject.toml`. Pip-installing a plugin package makes it automatically discoverable; no import statement required. It's how pytest plugins, click extensions, and most modern plugin systems work.
 
@@ -21,7 +21,7 @@ Entry points are explicitly **not** used.
 
 - Minimal mechanism. The registry is a dict; the decorator inserts into it. Easy to reason about, easy to debug.
 - No `pyproject.toml` ceremony required to ship a new engine — a single-file engine in a script directory works.
-- Fits the Storm philosophy: own your tools, build for the problem in front of you, not for a hypothetical plugin ecosystem.
+- Fits the project philosophy: own your tools, build for the problem in front of you, not for a hypothetical plugin ecosystem.
 
 **Tradeoffs:**
 
@@ -31,4 +31,4 @@ Entry points are explicitly **not** used.
 ## Alternatives considered
 
 - **Entry points + decorator fallback.** Standard Python plugin pattern. Rejected for now because we have one engine and no external authors; the ceremony is overhead until both change.
-- **No registry — fully-qualified dotted paths.** `gooseloop run --engine storm_customer_engine:StormCustomerEngine`. Smallest surface area but loses the short-name UX in config and CLI. Rejected on ergonomics.
+- **No registry — fully-qualified dotted paths.** `gooseloop run --engine customer_engine:CustomerAcquisitionEngine`. Smallest surface area but loses the short-name UX in config and CLI. Rejected on ergonomics.

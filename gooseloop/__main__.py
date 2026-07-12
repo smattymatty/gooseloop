@@ -104,7 +104,7 @@ def _cmd_recipe(args: argparse.Namespace) -> int:
         else:
             print(f"recipe not found: {base_path}", file=sys.stderr)
             return 1
-    local = base_path.with_suffix("").with_name(base_path.stem + ".local").with_suffix(".yaml")
+    local = base_path.with_name(base_path.stem + ".local" + base_path.suffix)
     overlay_paths = [Path(p) for p in args.overlay]
     merged = load_layered_recipe(
         base_path,

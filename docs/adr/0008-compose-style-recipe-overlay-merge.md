@@ -1,16 +1,16 @@
 ## ADR 0008 — Compose-style recipe overlay merge
 
 **Status:** Accepted (2026-06-04)
-**Context:** OSS extraction grill; depends on [ADR 0006](0006-pipeline-named-slots-framework-owns-review-summary-order.md) and [ADR 0007](0007-review-output-schema-operator-actions-ledger.md)
+**Context:** OSS-extraction design review; depends on [ADR 0006](0006-pipeline-named-slots-framework-owns-review-summary-order.md) and [ADR 0007](0007-review-output-schema-operator-actions-ledger.md)
 
 ## Context
 
-ADRs 0006 and 0007 made review.yaml and summary.yaml user-procurable: each project owns its own (`cp review.example.yaml review.yaml`), and engines ship the example as a starting template. The 2026-06-04 grill went further: users want multiple recipe variants per project (`review.daily.yaml`, `review.audit.yaml`, `review.specificexception.yaml`), with the option to compose them docker-compose-style.
+ADRs 0006 and 0007 made review.yaml and summary.yaml user-procurable: each project owns its own (`cp review.example.yaml review.yaml`), and engines ship the example as a starting template. The 2026-06-04 design review went further: users want multiple recipe variants per project (`review.daily.yaml`, `review.audit.yaml`, `review.specificexception.yaml`), with the option to compose them docker-compose-style.
 
-Three concrete pressures from the grill:
+Three concrete pressures from the design review:
 
 1. **Per-deployment context tuning.** A "production" review might be the base with one overlay that bumps `max_turns` from 4 to 8. Re-declaring the whole recipe to change one setting is the kind of duplication the compose pattern was designed to eliminate.
-2. **Per-machine tweaks.** Mathew wants the docker-compose `.override.yml` convention: a gitignored `review.local.yaml` that auto-applies on the developer's machine without polluting the committed base.
+2. **Per-machine tweaks.** The operator wants the docker-compose `.override.yml` convention: a gitignored `review.local.yaml` that auto-applies on the developer's machine without polluting the committed base.
 3. **CLI experimentation.** Operators want to try a tweaked recipe for one run (`gooseloop run --review-overlay review.experimental.yaml`) without permanently changing files.
 
 Goose recipes are YAML with non-trivial structure: a `prompt` string, a `context` list of `{label, source, optional?}` entries, a `settings` dict, an `extensions` list of `{type, name}`. A naive "later-key-wins" merge doesn't capture what operators expect — for instance, adding a context entry should append, not replace the whole `context` list.
@@ -74,7 +74,7 @@ Goose itself sees one resolved recipe per phase invocation (the framework writes
 
 ## Alternatives considered
 
-- **Single-file selection only** (no merging; `--review review.audit.yaml` picks one). Considered as the 90% solution. Rejected because the grill explicitly chose the docker-compose pattern. The per-machine `.local.yaml` use case alone justifies the merge cost.
+- **Single-file selection only** (no merging; `--review review.audit.yaml` picks one). Considered as the 90% solution. Rejected because the design review explicitly chose the docker-compose pattern. The per-machine `.local.yaml` use case alone justifies the merge cost.
 - **Hybrid: pick one base + one optional `.local.yaml` overlay (no N-layer chain).** Considered as the middle ground. Rejected because the CLI-overlay use case (one-off experiments) is the second most common after `.local.yaml`. Capping at two layers would forbid it.
 - **JSON Patch / RFC 6902.** Considered. Rejected because the operator-facing surface should be "a YAML file that looks like the base but only contains the bits you want to change," not a patch dialect. JSON Patch is precise but unfriendly.
 - **Inline includes (`!include other.yaml`).** Considered (the Ansible/Salt approach). Rejected because it pushes composition into the recipe file itself, mixing what-to-do with how-to-compose. Layered overlays keep composition external.

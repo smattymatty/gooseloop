@@ -5,7 +5,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from gooseloop.context_prepend import _raw_wrap, render_recipe_with_context
+from gooseloop.context_prepend import (
+    _raw_wrap,
+    prepared_recipe,
+    render_recipe_with_context,
+)
 
 
 def _read(path: str) -> dict:
@@ -394,3 +398,73 @@ def test_hello_world_greet_recipe_regression(tmp_path):
     assert "${OUTPUT_PATH}" not in out["prompt"]
     assert "world" in out["prompt"]
     assert "/tmp/g/world.txt" in out["prompt"]
+
+
+# ---- prepared_recipe: the whole preparation step, end to end -------
+# The looper's hot path: merge overlay layers, render the context:
+# block, yield the effective temp recipe, clean up on exit. Real yaml
+# files on disk, no goose binary involved.
+
+def _write_yaml(path: Path, doc: dict) -> Path:
+    path.write_text(yaml.safe_dump(doc, sort_keys=False))
+    return path
+
+
+def test_prepared_recipe_yields_rendered_file_and_cleans_up(tmp_path):
+    base = _write_yaml(tmp_path / "review.yaml", {"prompt": "hello ${NAME}"})
+    with prepared_recipe(base, {"NAME": "ada"}) as effective:
+        assert Path(effective).exists()
+        assert effective != str(base)
+        assert _read(effective)["prompt"] == "hello ada"
+    assert not Path(effective).exists()  # deleted on exit
+    assert base.exists()  # the source recipe is never touched
+
+
+def test_prepared_recipe_keeps_rendered_file_when_asked(tmp_path, monkeypatch):
+    monkeypatch.setenv("GOOSER_KEEP_RENDERED", "1")
+    base = _write_yaml(tmp_path / "review.yaml", {"prompt": "keep me"})
+    with prepared_recipe(base, {}) as effective:
+        pass
+    kept = Path(effective)
+    assert kept.exists()
+    kept.unlink()
+
+
+def test_prepared_recipe_applies_local_then_cli_overlays(tmp_path):
+    """Layer order per ADR 0008: base -> <name>.local.yaml -> CLI overlays."""
+    base = _write_yaml(tmp_path / "review.yaml", {
+        "prompt": "base prompt",
+        "settings": {"max_turns": 4, "temperature": 0.2},
+    })
+    local = _write_yaml(tmp_path / "review.local.yaml", {
+        "settings": {"max_turns": 8},
+    })
+    cli = _write_yaml(tmp_path / "experiment.yaml", {
+        "prompt": "experimental prompt",
+    })
+    with prepared_recipe(base, {}, local_path=local, overlay_paths=[cli]) as effective:
+        doc = _read(effective)
+    assert doc["prompt"] == "experimental prompt"       # CLI layer wins
+    assert doc["settings"]["max_turns"] == 8            # local overrode base
+    assert doc["settings"]["temperature"] == 0.2        # base survives deep-merge
+
+
+def test_prepared_recipe_resolves_context_block(tmp_path):
+    data = tmp_path / "notes.md"
+    data.write_text("the load-bearing notes")
+    base = _write_yaml(tmp_path / "review.yaml", {
+        "prompt": "read the notes",
+        "context": [{"label": "NOTES", "source": f"file:{data}"}],
+    })
+    with prepared_recipe(base, {}) as effective:
+        doc = _read(effective)
+    assert "the load-bearing notes" in doc["prompt"]
+    assert "context" not in doc  # consumed; goose never sees it
+
+
+def test_prepared_recipe_cleans_up_even_when_body_raises(tmp_path):
+    base = _write_yaml(tmp_path / "review.yaml", {"prompt": "boom"})
+    with pytest.raises(RuntimeError, match="phase exploded"):
+        with prepared_recipe(base, {}) as effective:
+            raise RuntimeError("phase exploded")
+    assert not Path(effective).exists()

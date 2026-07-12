@@ -579,10 +579,16 @@ def _params_to_env(params: dict[str, Any]) -> dict[str, str]:
 
 
 def _local_overlay_for(recipe_path: Path) -> Path | None:
-    """Compute the conventional .local.yaml sibling for an overlay base."""
+    """Compute the conventional .local.yaml sibling for an overlay base.
+
+    Built with with_name, not with_suffix: with_suffix on "review.local"
+    treats ".local" as the suffix and REPLACES it, collapsing the
+    candidate back to the base path (the bug that silently disabled
+    local overlays until 2026-07-12).
+    """
     if recipe_path.suffix not in (".yaml", ".yml"):
         return None
-    candidate = recipe_path.with_suffix("").with_name(
-        recipe_path.stem + ".local"
-    ).with_suffix(recipe_path.suffix)
+    candidate = recipe_path.with_name(
+        recipe_path.stem + ".local" + recipe_path.suffix
+    )
     return candidate if candidate.exists() else None

@@ -1,0 +1,73 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # pyproject declares requires-python >=3.11, so the suite runs on the
+  # oldest supported and the current development interpreter.
+  test:
+    runs-on: docker
+    strategy:
+      matrix:
+        python: ["3.11", "3.12"]
+    container:
+      image: python:${{ matrix.python }}-slim
+      volumes:
+        - pip-cache:/pip-cache
+
+    steps:
+      - name: Install git and make
+        run: apt-get update && apt-get install -y --no-install-recommends git make && rm -rf /var/lib/apt/lists/*
+
+      - name: Checkout code
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          git clone --depth 1 --branch "$BRANCH" "https://any:${GITHUB_TOKEN}@gitforge.ca/${GITHUB_REPOSITORY}.git" .
+
+      - name: Install dependencies
+        run: pip install --cache-dir /pip-cache -e ".[dev]"
+
+      # The Makefile is the check contract: `make check` is what the
+      # developer runs before pushing, so CI runs the same umbrella
+      # (pytest + strict mypy + import-linter fitness).
+      # PYTHON=python overrides the ./.venv default (see Makefile header).
+      - name: Run checks
+        run: PYTHON=python LINT_IMPORTS=lint-imports make check
+
+  # The published artifact, not the source tree: build the wheel,
+  # install it clean, and prove the import + CLI entry point work from
+  # site-packages. "Tests pass" and "the thing we publish works" are
+  # different claims.
+  package:
+    runs-on: docker
+    container:
+      image: python:3.12-slim
+      volumes:
+        - pip-cache:/pip-cache
+
+    steps:
+      - name: Install git
+        run: apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+
+      - name: Checkout code
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          git clone --depth 1 --branch "$BRANCH" "https://any:${GITHUB_TOKEN}@gitforge.ca/${GITHUB_REPOSITORY}.git" .
+
+      - name: Build the wheel
+        run: |
+          pip install --cache-dir /pip-cache build
+          python -m build --wheel
+
+      - name: Install the wheel and smoke the entry points
+        run: |
+          pip install --cache-dir /pip-cache dist/*.whl
+          cd /
+          python -c "import gooseloop; print('gooseloop', gooseloop.__version__)"
+          gooseloop --help

@@ -30,7 +30,7 @@ prompt: |
   every derived view is in sync with its canonical and there is nothing to
   seal. Do not invent drafts that aren't in the block.
 
-  Storm voice: no em-dashes, no emojis, no filler. Print the full markdown to
+  Voice: no em-dashes, no emojis, no filler. Print the full markdown to
   stdout so the operator sees it in the session footer. You do not need to save
   a file; the engine records its own state separately.
 

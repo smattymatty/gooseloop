@@ -1,0 +1,14 @@
+[importlinter]
+root_package = gooseloop
+
+; ADR 0000 four-layer topology. Layers top to bottom: Entry, Machinery,
+; Contracts, Foundation. A module may import from its own layer line
+; (":"-linked) or any line below it, never above.
+[importlinter:contract:layers]
+name = ADR 0000 four-layer topology
+type = layers
+layers =
+    gooseloop.__main__ : gooseloop.looper
+    gooseloop.goose : gooseloop.context_prepend : gooseloop.predicates : gooseloop.footer
+    gooseloop.engine : gooseloop.phase : gooseloop.branch_policy : gooseloop.environment : gooseloop.contrib
+    gooseloop.extract : gooseloop.session : gooseloop.config : gooseloop.recipe_merge : gooseloop.protocol : gooseloop.artifact : gooseloop.toolkit : gooseloop.text

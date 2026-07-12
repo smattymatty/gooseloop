@@ -7,11 +7,12 @@
 # Override PYTHON for CI or non-venv invocation, e.g. `PYTHON=python3 make check`.
 
 PYTHON ?= .venv/bin/python
+LINT_IMPORTS ?= .venv/bin/lint-imports
 
-.PHONY: check test typecheck pre-release-check clean
+.PHONY: check test typecheck fitness pre-release-check clean
 
 # Umbrella: every check in one command.
-check: test typecheck
+check: test typecheck fitness
 
 test:
 	$(PYTHON) -m pytest -q
@@ -19,6 +20,10 @@ test:
 # Scope (strict, gooseloop package only) lives in pyproject [tool.mypy].
 typecheck:
 	$(PYTHON) -m mypy
+
+# ADR 0000 layer topology, enforced by import-linter (.importlinter).
+fitness:
+	$(LINT_IMPORTS)
 
 # Release-time check. Asserts pyproject [project].version matches the top
 # CHANGELOG.md entry. Run before `uv publish`.

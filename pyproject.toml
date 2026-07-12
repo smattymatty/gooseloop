@@ -28,6 +28,7 @@ dev = [
     "minijinja>=2",
     "mypy>=1.13",
     "types-PyYAML>=6.0",
+    "import-linter>=2.0",
 ]
 
 [project.scripts]

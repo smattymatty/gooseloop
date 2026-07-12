@@ -404,3 +404,28 @@ def test_review_partial_runs_body_but_skips_summary(tmp_path, monkeypatch):
 
 def patched_calls(canned: _CannedGoose) -> list[str]:
     return canned.calls
+
+
+def test_local_overlay_for_finds_the_dot_local_sibling(tmp_path):
+    """Regression 2026-07-12: the candidate was built with with_suffix,
+    which treats ".local" as a suffix and REPLACES it — collapsing
+    review.local.yaml back to review.yaml. The base file always exists,
+    so the "local overlay" was the base merged with itself and the
+    .local.yaml convention (ADR 0008 layer 2) silently never applied."""
+    from gooseloop.looper import _local_overlay_for
+
+    base = tmp_path / "review.yaml"
+    base.write_text("prompt: base\n")
+    local = tmp_path / "review.local.yaml"
+    local.write_text("prompt: local\n")
+
+    assert _local_overlay_for(base) == local
+
+
+def test_local_overlay_for_none_when_absent(tmp_path):
+    from gooseloop.looper import _local_overlay_for
+
+    base = tmp_path / "review.yaml"
+    base.write_text("prompt: base\n")
+    assert _local_overlay_for(base) is None
+    assert _local_overlay_for(tmp_path / "review.json") is None

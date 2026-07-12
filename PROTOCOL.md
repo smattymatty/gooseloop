@@ -52,8 +52,8 @@ emit a structured plan that the framework reads.
 ```
 
 All six keys are required. Engines may add additional keys; they pass through
-to `Context.artifacts` for engine-internal consumption (Storm's
-`stale_prospects` and `new_prospect_ideas` ride this way).
+to `Context.artifacts` for engine-internal consumption (a customer-pipeline
+engine's `stale_prospects` list rides this way).
 
 ### Output framing
 
@@ -316,7 +316,7 @@ my-project/
 ├── summary.yaml            # user-procured; cp'd from summary.example.yaml
 ├── recipes/                # body recipes (engine-bundled or user-supplied)
 ├── reviews/sessions/       # gooseloop-managed session output
-└── ...                     # engine-specific files (e.g. core/input/ for Storm)
+└── ...                     # engine-specific files (inputs, journals, output dirs)
 ```
 
 ## 11. Quick reference for new authors
@@ -396,7 +396,7 @@ This protocol is canonical. Disagreements between this document and the code
 are bugs in the code.
 
 For the design history, see the ADRs in [`docs/adr/`](docs/adr/) —
-particularly 0001 (Engine returns Pipeline), 0004 (Engine + Environment as
-siblings), 0005 (Environment ABC narrows), 0006 (Pipeline named slots), 0007
-(Review output schema + operator_actions ledger), and 0008 (recipe overlay
-merge).
+particularly 0000 (four-layer import topology), 0001 (Engine returns
+Pipeline), 0004 (Engine + Environment as siblings), 0005 (Environment ABC
+narrows), 0006 (Pipeline named slots), 0007 (Review output schema +
+operator_actions ledger), and 0008 (recipe overlay merge).

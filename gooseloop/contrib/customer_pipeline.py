@@ -1,8 +1,8 @@
 """CustomerPipelineEnvironment — shape contract for customer-acquisition pipelines.
 
 Domain vocabulary: prospects, lifecycles, outreach, research, broadcast,
-discovery questions, founder journal. Concrete environments (Storm's
-StormEnvironment, future BetaCo-style users) subclass this to inherit
+discovery questions, founder journal. Concrete environments
+subclass this to inherit
 the contract and implement each abstractmethod.
 
 Recipes call these by name via env_method:<name> in their context:

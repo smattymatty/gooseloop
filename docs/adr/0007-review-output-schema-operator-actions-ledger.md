@@ -1,18 +1,18 @@
 ## ADR 0007 — Review output schema and operator_actions ledger as framework primitives
 
 **Status:** Accepted (2026-06-04)
-**Context:** OSS extraction grill; depends on [ADR 0006](0006-pipeline-named-slots-framework-owns-review-summary-order.md)
+**Context:** OSS-extraction design review; depends on [ADR 0006](0006-pipeline-named-slots-framework-owns-review-summary-order.md)
 
 ## Context
 
-ADR 0006 made review and summary framework-positioned (always first / always last). That decision is incomplete without a contract on what reviews produce. Two pressures from the 2026-06-04 grill:
+ADR 0006 made review and summary framework-positioned (always first / always last). That decision is incomplete without a contract on what reviews produce. Two pressures from the 2026-06-04 design review:
 
 1. **Recipe portability across engines.** A user-procured `review.yaml` (say, "code-review review" or "weekly-status review") needs to work with any engine that consumes its output. That requires a stable shape.
-2. **Body phases must be able to extend the operator's action queue.** Mathew's example: "a part of the body finishes a feature, so a new operator review step would be to manually test/visual test this." The review can't enumerate every action up front; the ledger must grow across the body.
+2. **Body phases must be able to extend the operator's action queue.** The operator's example: "a part of the body finishes a feature, so a new operator review step would be to manually test/visual test this." The review can't enumerate every action up front; the ledger must grow across the body.
 
-Today the Storm engine has an informal pattern that does both: review emits `{summary, insights, suggested_actions, operator_actions, stale_prospects, new_prospect_ideas}` (engine.py:_REVIEW_REQUIRED_KEYS); the engine's review.post_process parses it and spawns branches; `Context.artifacts["operator_actions"]` carries the ledger forward but is untyped `dict[str, Any]`. The agent's code review flagged the typing gap explicitly.
+Today the origin engine has an informal pattern that does both: review emits `{summary, insights, suggested_actions, operator_actions, stale_prospects, new_prospect_ideas}` (engine.py:_REVIEW_REQUIRED_KEYS); the engine's review.post_process parses it and spawns branches; `Context.artifacts["operator_actions"]` carries the ledger forward but is untyped `dict[str, Any]`. The agent's code review flagged the typing gap explicitly.
 
-The grill chose to lift this pattern from engine-internal convention to a framework primitive, with a schema that's small enough to be cross-engine portable but explicit enough that the framework can drive routing from it.
+The design review chose to lift this pattern from engine-internal convention to a framework primitive, with a schema that's small enough to be cross-engine portable but explicit enough that the framework can drive routing from it.
 
 ## Decision
 
@@ -93,7 +93,7 @@ Framework starts at `"1.0"`. Backwards-compatible additions (new optional keys) 
 
 - Engines that want a niche review output (e.g. a review that emits a graph DOT file) must encode it in extension keys. The framework reads required keys only; arbitrary extensions ride alongside.
 - Schema versioning adds one required key (`protocol_version`) to every review. Cheap; documented.
-- Storm migration: Storm's existing review schema (`stale_prospects`, `new_prospect_ideas`, etc.) gets renamed/relocated. `suggested_actions` becomes `routing`; `stale_prospects` and `new_prospect_ideas` are engine extension keys (Storm-specific). The pipeline-review.yaml prompt needs updating.
+- Origin migration: the origin engine's existing review schema (`stale_prospects`, `new_prospect_ideas`, etc.) gets renamed/relocated. `suggested_actions` becomes `routing`; `stale_prospects` and `new_prospect_ideas` are engine extension keys (origin-specific). The pipeline-review.yaml prompt needs updating.
 
 ## Migration plan
 
@@ -102,8 +102,8 @@ Framework starts at `"1.0"`. Backwards-compatible additions (new optional keys) 
 3. Add `ctx.operator_actions` read-only property exposing the current ledger.
 4. Add `ctx.record_output(path)` and `ctx.session_log(msg)` while we're touching Context — same naming convention, same typed-API benefit.
 5. Update framework review-phase wrapper to parse `routing[]` from output, build body phases via engine's `BranchPolicy` registry, fail loud on missing required keys.
-6. Update Storm's pipeline-review.yaml: rename `suggested_actions` → `routing` (with key shape adjustments); declare `protocol_version: "1.0"`.
-7. Move `stale_prospects` and `new_prospect_ideas` out of required keys (they're Storm-internal extensions).
+6. Update the origin engine's pipeline-review.yaml: rename `suggested_actions` → `routing` (with key shape adjustments); declare `protocol_version: "1.0"`.
+7. Move `stale_prospects` and `new_prospect_ideas` out of required keys (they're origin-engine extensions).
 
 ## Alternatives considered
 

@@ -1,7 +1,7 @@
 """Environment abstract base class.
 
 Per ADR 0005 the framework ABC has exactly one abstract method: env_vars().
-Shape-specific contracts (Storm's customer pipeline, Claude design-handoff,
+Shape-specific contracts (customer pipelines, Claude design-handoff,
 future domains) live as separate ABCs under gooseloop.contrib.* and inherit
 from this base.
 
