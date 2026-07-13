@@ -158,6 +158,81 @@ def test_pipeline_type_enforced(tmp_path, patched_looper):
         looper.begin_loop()
 
 
+def test_summary_output_written_to_session_dir(tmp_path, patched_looper):
+    """Regression 2026-07-13: every body phase leaves a file (a draft, a
+    recap) but the summary phase — whose entire job is the human-facing
+    report — left nothing behind once the terminal scrollback was gone.
+    The looper now writes the summary phase's raw stdout to
+    <session_dir>/summary.md, alongside session.log and session.meta.json."""
+    engine = _RecordingEngine()
+    looper = GooseLooper(
+        engine=engine,
+        environment=_SilentEnv(),
+        config=_make_config(tmp_path),
+        save=True,
+    )
+    result = looper.begin_loop()
+    session_dir = result["session_dir"]
+    assert session_dir is not None
+    summary_path = session_dir / "summary.md"
+    assert summary_path.exists()
+    assert summary_path.read_text() == SUMMARY_OUTPUT
+
+
+def test_no_summary_md_when_summary_phase_absent(tmp_path, patched_looper):
+    """A Pipeline with summary=None (permitted per ADR 0006) writes no
+    summary.md — there is nothing to capture."""
+    class _NoSummaryEngine(_RecordingEngine):
+        def pipeline(self, ctx: Context) -> Pipeline:
+            return Pipeline(review=Phase(name="review", recipe_path="review.yaml"))
+
+    looper = GooseLooper(
+        engine=_NoSummaryEngine(),
+        environment=_SilentEnv(),
+        config=_make_config(tmp_path),
+        save=True,
+    )
+    result = looper.begin_loop()
+    session_dir = result["session_dir"]
+    assert session_dir is not None
+    assert not (session_dir / "summary.md").exists()
+
+
+def test_ledger_json_written_with_final_operator_actions(tmp_path, patched_looper):
+    """Regression 2026-07-13: the same gap as summary.md, one layer deeper.
+    review.json freezes the review's SEED ledger; body-appended actions
+    (e.g. a body phase's own add_operator_action calls) only ever reached
+    the terminal footer. ledger.json now persists the FINAL, complete
+    operator_actions + outputs_written after the whole pass completes."""
+    class _AppendingEngine(_RecordingEngine):
+        def pipeline(self, ctx: Context) -> Pipeline:
+            def _append(_output: str, c: Context) -> None:
+                c.add_operator_action("seal the thing", why="body said so")
+                c.record_output("/tmp/gooseloop-test/out.txt")
+            return Pipeline(
+                review=Phase(name="review", recipe_path="review.yaml"),
+                body=[],
+                summary=Phase(name="summary", recipe_path="summary.yaml",
+                              post_process=_append),
+            )
+
+    looper = GooseLooper(
+        engine=_AppendingEngine(),
+        environment=_SilentEnv(),
+        config=_make_config(tmp_path),
+        save=True,
+    )
+    result = looper.begin_loop()
+    session_dir = result["session_dir"]
+    ledger_path = session_dir / "ledger.json"
+    assert ledger_path.exists()
+    ledger = json.loads(ledger_path.read_text())
+    actions = [a["action"] for a in ledger["operator_actions"]]
+    assert "double-check greetings landed" in actions  # from the review seed
+    assert "seal the thing" in actions                  # body-appended
+    assert "/tmp/gooseloop-test/out.txt" in ledger["outputs_written"]
+
+
 def test_routing_phase_gets_output_path_env_var(tmp_path):
     """Regression 2026-06-04: the body recipe wrote ${SHA}.md while the
     BranchPolicy predicate looked for <slug>-<sha8>.md. Filename mismatch

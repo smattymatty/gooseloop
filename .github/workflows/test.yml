@@ -28,3 +28,28 @@ jobs:
       # uv sync created ./.venv, which is the Makefile's default PYTHON.
       - name: Run checks
         run: make check
+
+  # The published artifact, not the source tree: build the wheel,
+  # install it into a fresh venv, and prove the import + CLI entry
+  # point work from site-packages. "Tests pass" and "the thing we
+  # publish works" are different claims.
+  package:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the wheel
+        run: uv build --wheel
+
+      - name: Install the wheel and smoke the entry points
+        run: |
+          uv venv /tmp/smoke
+          VIRTUAL_ENV=/tmp/smoke uv pip install dist/*.whl
+          cd /
+          /tmp/smoke/bin/python -c "import gooseloop; print('gooseloop', gooseloop.__version__)"
+          /tmp/smoke/bin/gooseloop --help

@@ -4,19 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gooseloop"
-version = "0.1.0"
+version = "0.1.1"
 description = "Execution shell for goose-recipe pipelines"
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{ name = "Storm Developments" }]
 keywords = ["goose", "llm", "pipeline", "agent", "automation"]
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
     "PyYAML>=6.0",
@@ -40,6 +41,9 @@ Source = "https://github.com/smattymatty/gooseloop"
 [tool.setuptools.packages.find]
 include = ["gooseloop*"]
 exclude = ["tests*", "engines*"]
+
+[tool.setuptools.package-data]
+gooseloop = ["py.typed"]
 
 [tool.mypy]
 # Strict covers the framework package only. Engines are a teaching set

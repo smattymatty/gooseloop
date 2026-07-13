@@ -51,9 +51,14 @@ emit a structured plan that the framework reads.
 }
 ```
 
-All six keys are required. Engines may add additional keys; they pass through
-to `Context.artifacts` for engine-internal consumption (a customer-pipeline
-engine's `stale_prospects` list rides this way).
+Four keys are required: `protocol_version`, `status`, `summary`, and
+`routing`. `insights` and `operator_actions` are optional and default to `[]`
+when missing (validation is liberal in what it accepts: status synonyms
+collapse to the enum, bare-string operator actions gain an empty `why`,
+malformed entries are dropped). Review recipes should still emit all six so
+the model's output shape stays stable. Engines may add additional keys; they
+pass through to `Context.artifacts` for engine-internal consumption (a
+customer-pipeline engine's `stale_prospects` list rides this way).
 
 ### Output framing
 
@@ -107,7 +112,11 @@ The summary phase has access to:
 ### Summary output
 
 The summary's output is human-facing. No required JSON schema. Convention:
-markdown to stdout, optionally also written to a session-summary file.
+markdown to stdout. The looper writes the summary phase's full output verbatim
+to `<session_dir>/summary.md` — the one durable copy once the terminal
+scrollback is gone. This is the only phase output the framework persists in
+full; body phases persist only what they explicitly write via
+`ctx.record_output`.
 
 ## 4. Body phase rules
 
@@ -127,6 +136,12 @@ ctx.session_log(message: str)
 - `record_output` appends to `ctx.artifacts["outputs_written"]`. The session
   footer renders these.
 - `session_log` writes a timestamped line to the session's `session.log`.
+
+At the end of the pass the looper writes the FINAL contents of both — every
+body-appended action, every recorded output, not just the review's seed —
+to `<session_dir>/ledger.json`. This is the durable copy once the terminal
+footer is gone; `actions/review.json` (when an engine writes one) is only
+the seed, frozen before the body ever ran.
 
 Body phases must NOT mutate `routing[]`, `insights[]`, `summary`, or `status`.
 Those are the review's output, frozen at the bookend.
@@ -295,13 +310,14 @@ gooseloop/                   # the framework package (the OSS extraction target)
 ├── looper.py               # GooseLooper
 ├── goose.py                # subprocess wrapper, retry, rate-limit handling
 ├── context_prepend.py      # recipe render-time input resolution
+├── extract.py              # deliverable JSON extraction, with provenance
 ├── recipe_merge.py         # overlay merge engine (per ADR 0008)
 ├── predicates.py           # success_predicate factories
 ├── toolkit.py              # stdlib-only engine helpers (Source, fetch, state io)
 ├── artifact.py             # versioned artifact contracts (see §12)
 ├── session.py              # session folder management
 ├── footer.py               # per-call and per-session footers
-├── text.py                 # ANSI, banners, JSON extraction
+├── text.py                 # ANSI, banners
 ├── config.py               # gooseloop.toml loader (LooperConfig)
 └── contrib/
     ├── __init__.py
@@ -316,6 +332,12 @@ my-project/
 ├── summary.yaml            # user-procured; cp'd from summary.example.yaml
 ├── recipes/                # body recipes (engine-bundled or user-supplied)
 ├── reviews/sessions/       # gooseloop-managed session output
+│   └── <timestamp>/
+│       ├── session.meta.json   # model, engine, timestamps
+│       ├── session.log         # append-only event log
+│       ├── summary.md          # the summary phase's full verbatim output
+│       ├── ledger.json         # FINAL operator_actions + outputs_written
+│       └── actions/            # engine-specific (e.g. review.json)
 └── ...                     # engine-specific files (inputs, journals, output dirs)
 ```
 

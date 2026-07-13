@@ -208,6 +208,9 @@ class GooseLooper:
             session_dir=session_dir,
         )
 
+        if session_dir:
+            self._write_ledger(session_dir, ctx)
+
         return {
             "goose_calls": goose_calls,
             "actions_planned": self._planned,
@@ -219,6 +222,26 @@ class GooseLooper:
             "review_output": review_output,
             "session_dir": session_dir,
         }
+
+    def _write_ledger(self, session_dir: Path, ctx: Context) -> None:
+        """Persist the FINAL operator_actions ledger and outputs list.
+
+        review.json (if the engine writes one) is the review's ledger seed,
+        frozen before any body phase runs. Body phases append to
+        ctx.artifacts via add_operator_action/record_output for the rest of
+        the pass, and until now that final, complete ledger existed only in
+        the terminal footer — gone the moment the scrollback was. Same gap
+        as summary.md, one layer deeper: a reader of the session folder
+        alone (a dashboard, a future self) could not see what the pass
+        actually decided needed sealing.
+        """
+        import json
+        ledger_path = session_dir / "ledger.json"
+        ledger_path.write_text(json.dumps({
+            "operator_actions": list(ctx.artifacts.get("operator_actions", [])),
+            "outputs_written": list(ctx.artifacts.get("outputs_written", [])),
+        }, indent=2))
+        log_step(session_dir, f"ledger: wrote {ledger_path}")
 
     # ------------------------------------------------------------------
     # progress
@@ -505,6 +528,10 @@ class GooseLooper:
         output = self._invoke_recipe(phase, ctx, overlays=overlays)
         if output is None:
             return 0, False
+        if is_summary and ctx.session_dir:
+            summary_path = ctx.session_dir / "summary.md"
+            summary_path.write_text(output)
+            log_step(ctx.session_dir, f"summary: wrote {summary_path}")
         if phase.post_process is not None:
             try:
                 phase.post_process(output, ctx)
