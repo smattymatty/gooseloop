@@ -1,10 +1,10 @@
 # gooseloop project config — points at the hello-world reference engine.
-# A consuming project replaces engine_module with their own.
+# A consuming project replaces default_engine with their own.
 
 [gooseloop]
 default_model = "deepseek/deepseek-v4-flash"
 sessions_dir = "reviews/sessions"
-engine_module = "engines.hello_world"
+default_engine = "engines.doc_drift"
 max_queue_depth = 50
 review_recipe = "review.yaml"
 summary_recipe = "summary.yaml"

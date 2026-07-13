@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `run.lock`: one run at a time per loop root (ADR 0010, PROTOCOL §13).
+  `begin_loop()` holds `<loop root>/run.lock` for the whole pass; a second
+  run is refused before doing any work — CLI exit code 3, library callers
+  get `gooseloop.RunLockHeldError`. Stale locks from crashed runs
+  self-heal (dead pid → reclaim with a stderr warning). Consumers may read
+  the lock (pid, started, engine, session_id) for exact "is a run in
+  flight" detection; only gooseloop writes or removes it. Consuming
+  projects should gitignore `run.lock`.
+- `session.meta.json` now records `engine_module` (the resolved dotted
+  module path) alongside the short `engine` slug, so a session is
+  attributable to the engine that actually ran it, not the loop's default.
+
+- `gooseloop run <engine>`: run any engine by short name (`gooseloop run
+  doc_drift`) or dotted module path, as a positional argument. Short names
+  resolve by scanning the loop root (ADR 0009); ambiguity is refused with
+  the candidate list, never guessed. `gooseloop.config.resolve_engine_module`
+  is public so consumers resolve names the same way the CLI does.
+- `gooseloop engines` now lists every engine in the loop root and marks the
+  default, instead of printing only the configured module.
+- `gooseloop.introspect` (PROTOCOL §7): `list_env_methods()` enumerates the
+  methods an Environment offers as `env_method:` sources (with their first
+  docstring line), and `preview_source()` / `preview_recipe_context()`
+  dry-run context sources — stat, never read; check env_methods exist,
+  never call them. Built as the data layer for context tooling
+  (gooseloop-dash's source chips, glob previewer, and context editor).
+- `gooseloop recipe --sources NAME [--json] [-e MODULE]`: preview every
+  context source of a recipe against an engine's env scope — glob matches
+  with file sizes, unset env vars, missing files, unknown env_methods —
+  plus the env_methods and env vars available. Exit 1 when a required
+  source would fail the render, so it doubles as a preflight check.
+  `--json` is the machine-readable face dashboards consume.
+
+### Changed
+
+- `gooseloop.toml`'s `engine_module` key is renamed to `default_engine` —
+  it is the engine a bare `gooseloop run` runs, not a claim that a project
+  has one engine. The old key keeps working with a rename nudge on stderr,
+  and `LooperConfig.engine_module` remains as a deprecated property alias.
+  Constructing `LooperConfig(engine_module=...)` directly must switch to
+  `default_engine=...`.
+
 ## [0.1.1] - 2026-07-13
 
 ### Fixed

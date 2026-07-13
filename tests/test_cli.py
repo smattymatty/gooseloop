@@ -45,7 +45,7 @@ def _project(tmp_path, monkeypatch, *, engine_module: str) -> None:
     """A minimal consuming project: cwd + gooseloop.toml."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "gooseloop.toml").write_text(
-        f'[gooseloop]\nengine_module = "{engine_module}"\n'
+        f'[gooseloop]\ndefault_engine = "{engine_module}"\n'
     )
 
 
@@ -139,7 +139,7 @@ def test_recipe_without_resolve_is_a_usage_error(tmp_path, monkeypatch, capsys):
 
 # ---- engines ------------------------------------------------------
 
-def test_engines_reports_the_configured_engine_class(tmp_path, monkeypatch, capsys):
+def test_engines_lists_the_default_engine_with_marker(tmp_path, monkeypatch, capsys):
     _project(tmp_path, monkeypatch, engine_module="cli_engine_show")
     (tmp_path / "cli_engine_show.py").write_text(_ENGINE_SRC)
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -147,14 +147,35 @@ def test_engines_reports_the_configured_engine_class(tmp_path, monkeypatch, caps
     out = capsys.readouterr().out
     assert rc == 0
     assert "cli_engine_show" in out
-    assert "CliEngine" in out
+    assert "(default)" in out
 
 
-def test_engines_unimportable_module_fails(tmp_path, monkeypatch, capsys):
+def test_engines_lists_every_sibling_engine(tmp_path, monkeypatch, capsys):
+    """One loop root, several engines: `gooseloop engines` shows them all,
+    marking the default (ADR 0009)."""
+    import sys as _sys
+    # The real repo's `engines` package may be cached from earlier tests;
+    # a real CLI invocation is a fresh process, so evict it here.
+    for m in [m for m in _sys.modules if m == "engines" or m.startswith("engines.")]:
+        monkeypatch.delitem(_sys.modules, m)
+    _project(tmp_path, monkeypatch, engine_module="engines.alpha")
+    pkg = tmp_path / "engines"
+    for name in ("alpha", "beta"):
+        (pkg / name).mkdir(parents=True)
+        (pkg / name / "__init__.py").write_text(_ENGINE_SRC)
+    (pkg / "__init__.py").write_text("")
+    rc = main(["engines"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "engines.alpha  (default)" in out
+    assert "engines.beta" in out
+
+
+def test_engines_unresolvable_default_fails(tmp_path, monkeypatch, capsys):
     _project(tmp_path, monkeypatch, engine_module="definitely_not_a_module")
     rc = main(["engines"])
     assert rc == 1
-    assert "import failed" in capsys.readouterr().err
+    assert "no engine named" in capsys.readouterr().err
 
 
 # ---- run: exit-code contract --------------------------------------
@@ -180,3 +201,83 @@ def test_run_engine_module_without_engine_attr_aborts(tmp_path, monkeypatch):
     (tmp_path / "cli_engine_empty.py").write_text("x = 1\n")
     with pytest.raises(SystemExit, match="no `engine` attribute"):
         main(["run", "--no-save"])
+
+
+# ---- recipe --sources ----------------------------------------------
+
+_ENV_ENGINE_SRC = textwrap.dedent("""
+    from gooseloop import Engine, Environment, Phase, Pipeline
+
+    class SrcEnv(Environment):
+        def __init__(self):
+            import os
+            self._dir = os.environ["CLI_TEST_DATA_DIR"]
+
+        def env_vars(self):
+            return {"DATA_DIR": self._dir}
+
+        def journal_text(self) -> str:
+            \"\"\"Founder journal, most recent first.\"\"\"
+            return "journal"
+
+    class SrcEngine(Engine):
+        @property
+        def name(self):
+            return "src-test"
+
+        def pipeline(self, ctx):
+            return Pipeline(
+                review=Phase(name="review", recipe_path="review.yaml"),
+                body=[],
+                summary=None,
+            )
+
+    engine = SrcEngine
+    environment = SrcEnv
+""")
+
+
+def _sources_project(tmp_path, monkeypatch) -> None:
+    _project(tmp_path, monkeypatch, engine_module="cli_engine_src")
+    (tmp_path / "cli_engine_src.py").write_text(_ENV_ENGINE_SRC)
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "a.txt").write_text("aaa")
+    monkeypatch.setenv("CLI_TEST_DATA_DIR", str(data))
+    (tmp_path / "review.yaml").write_text(yaml.safe_dump({
+        "prompt": "review it",
+        "context": [
+            {"label": "FILES", "source": "glob:${DATA_DIR}/*.txt"},
+            {"label": "JOURNAL", "source": "env_method:journal_text"},
+            {"label": "MAYBE", "source": "env_file:UNSET_VAR", "optional": True},
+        ],
+    }))
+
+
+def test_recipe_sources_json_payload(tmp_path, monkeypatch, capsys):
+    _sources_project(tmp_path, monkeypatch)
+    rc = main(["recipe", "--sources", "review", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 0                      # the only failure is optional
+    assert payload["ok"] is True
+    by_label = {c["label"]: c for c in payload["context"]}
+    assert by_label["FILES"]["ok"] and by_label["FILES"]["matches"][0]["size"] == 3
+    assert by_label["JOURNAL"]["ok"] and by_label["JOURNAL"]["kind"] == "env_method"
+    assert not by_label["MAYBE"]["ok"] and by_label["MAYBE"]["optional"]
+    assert payload["env_methods"] == [
+        {"name": "journal_text", "doc": "Founder journal, most recent first."}
+    ]
+    assert "DATA_DIR" in payload["env_vars"]
+
+
+def test_recipe_sources_required_failure_exits_one(tmp_path, monkeypatch, capsys):
+    _sources_project(tmp_path, monkeypatch)
+    (tmp_path / "review.yaml").write_text(yaml.safe_dump({
+        "prompt": "review it",
+        "context": [{"label": "GONE", "source": "env_file:UNSET_VAR"}],
+    }))
+    rc = main(["recipe", "--sources", "review"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "GONE" in out
+    assert "unset" in out

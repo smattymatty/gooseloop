@@ -252,6 +252,32 @@ sentinel placeholder block (`(env var X is unset; skipped)`, `(no files matched
 pattern: Y)`) instead of raising. Use for "this input is meaningful when
 present but a fresh install legitimately has nothing here" cases.
 
+### Introspection and dry-run preview
+
+Tooling (the CLI, dashboards) can ask "what sources are available, and would
+each one resolve" without rendering anything. `gooseloop.introspect` provides:
+
+- `list_env_methods(environment)` — every method usable as an `env_method:`
+  source. Qualification mirrors what render time accepts: public, callable
+  with zero arguments, not annotated to return anything other than `str`.
+  `env_vars` is excluded (it is the ABC's own contract, not a context
+  source). Each entry carries the method's first docstring line, so
+  documenting env_methods pays off directly in tooling.
+- `preview_source(source, env, environment=...)` and
+  `preview_recipe_context(recipe, env, environment=...)` — dry-run sources.
+  Previews stat files (paths and sizes) but never read bodies, and check
+  that an env_method exists but never call it: calling is real work (a
+  journal digest, a URL fetch) and belongs to render time or an explicit
+  "preview content" action in the calling tool.
+
+The CLI face is `gooseloop recipe --sources NAME [--json] [-e MODULE]`. It
+merges the recipe's overlay layers (§6), previews every context entry against
+the engine's env scope (`environment.env_vars()` + `engine.base_env()` over
+the process env), and lists the env_methods and env vars available. Exit 0
+when every required source resolves; exit 1 when a required source would fail
+the render. Optional failures are reported but tolerated, matching render-time
+strictness. `--json` emits the same data machine-readable, for dashboards.
+
 ## 8. Environment ABC and contrib mixins
 
 The framework `Environment` ABC has exactly one abstract method:
@@ -315,6 +341,7 @@ gooseloop/                   # the framework package (the OSS extraction target)
 ├── predicates.py           # success_predicate factories
 ├── toolkit.py              # stdlib-only engine helpers (Source, fetch, state io)
 ├── artifact.py             # versioned artifact contracts (see §12)
+├── runlock.py              # run.lock, one run per loop root (see §13)
 ├── session.py              # session folder management
 ├── footer.py               # per-call and per-session footers
 ├── text.py                 # ANSI, banners
@@ -327,6 +354,8 @@ gooseloop/                   # the framework package (the OSS extraction target)
 # A consuming project's layout:
 my-project/
 ├── gooseloop.toml          # which engine, which review/summary recipe, etc.
+├── run.lock                # present only while a run is in flight (§13);
+│                           # gitignore it
 ├── review.yaml             # user-procured; cp'd from engine's review.example.yaml
 ├── review.local.yaml       # gitignored; per-machine tweaks
 ├── summary.yaml            # user-procured; cp'd from summary.example.yaml
@@ -412,6 +441,58 @@ Shared mechanics for engine authors (Source parsing, hardened URL fetch,
 paste caps, slug safety, JSON state io) live in `gooseloop.toolkit`, extracted
 from the engines that proved the need.
 
+## 13. The run lock
+
+One run at a time per loop root. `GooseLooper.begin_loop()` acquires
+`<loop root>/run.lock` before any phase runs and removes it when the pass
+ends, success or failure. A second run started while the lock is held is
+refused before doing any work: the CLI exits with code 3 (distinct from
+1 = run error and 2 = usage error, so a supervisor can tell "busy" from
+"failed"); library callers get `gooseloop.RunLockHeldError`.
+
+The lock file is JSON:
+
+```json
+{
+  "pid": 48213,
+  "started": "2026-07-13T14:02:11+00:00",
+  "engine": "engines.doc_drift",
+  "session_id": "2026-07-13T14-02-11"
+}
+```
+
+- `pid` — the process running the pass.
+- `started` — ISO 8601 UTC, when the lock was acquired.
+- `engine` — the resolved dotted module path of the engine in flight.
+- `session_id` — the session folder name; `null` until the folder exists,
+  and for the whole run under `--no-save`.
+
+Rules:
+
+- **Scope is the loop root, not the engine.** Two different engines in the
+  same root still serialize: they share the working tree, the sessions dir,
+  and any cross-run state.
+- **Every `gooseloop run` locks — no flag exceptions.** `--no-save` and
+  `--review-only` skip artifacts, not side effects. `recipe` and `engines`
+  are read-only and never lock.
+- **Stale locks self-heal.** If the lock's pid is dead, the next run
+  reclaims it with a stderr warning naming the crashed run. Where pid
+  liveness cannot be probed safely, the run refuses conservatively.
+- **One writer.** Consumers (dashboards, supervisors) may read `run.lock`
+  to answer "is a run in flight, and which engine" — pid liveness is the
+  authoritative check, not the file's existence alone. Only gooseloop
+  creates, replaces, or removes the file. To cancel a run, signal the pid
+  and let the run's own cleanup delete the lock. A consumer that deletes
+  `run.lock` is violating this protocol, not exercising an API.
+
+The run's session records the same attribution durably:
+`session.meta.json` carries `engine_module` (the resolved dotted path)
+alongside the short `engine` display slug.
+
+Consuming projects gitignore `run.lock` (§10 layout).
+
+Decision record: ADR 0010.
+
 ---
 
 This protocol is canonical. Disagreements between this document and the code
@@ -421,4 +502,5 @@ For the design history, see the ADRs in [`docs/adr/`](docs/adr/) —
 particularly 0000 (four-layer import topology), 0001 (Engine returns
 Pipeline), 0004 (Engine + Environment as siblings), 0005 (Environment ABC
 narrows), 0006 (Pipeline named slots), 0007 (Review output schema +
-operator_actions ledger), and 0008 (recipe overlay merge).
+operator_actions ledger), 0008 (recipe overlay merge), and 0010 (the run
+lock).

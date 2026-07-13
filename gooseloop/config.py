@@ -3,6 +3,12 @@
 Loaded once at the top of a run via LooperConfig.load() and passed
 explicitly. No module-level singleton, no clear-cache shims, no global
 state. Tests construct LooperConfig directly with overrides.
+
+`default_engine` (renamed from `engine_module`, 2026-07-13, ADR 0009) is
+exactly what its name says: the engine a bare `gooseloop run` runs. It is
+NOT a claim that a project has one engine — one gooseloop.toml routinely
+serves several (each with its own [section]), and `gooseloop run <name>`
+selects any of them by short name via resolve_engine_module().
 """
 
 import sys
@@ -19,7 +25,7 @@ DEFAULTS: dict[str, Any] = {
     "gooseloop": {
         "default_model": "openrouter/owl-alpha",
         "sessions_dir": "reviews/sessions",
-        "engine_module": "engines.hello_world",
+        "default_engine": "engines.hello_world",
         "environment_config": "",
         "max_queue_depth": 50,
         "review_recipe": "review.yaml",
@@ -43,13 +49,19 @@ class LooperConfig:
     """Resolved gooseloop.toml. Construct via LooperConfig.load(); never global."""
     default_model: str = "openrouter/owl-alpha"
     sessions_dir: Path = field(default_factory=lambda: Path("reviews/sessions"))
-    engine_module: str = "engines.hello_world"
+    default_engine: str = "engines.hello_world"
     environment_config: Path | None = None
     max_queue_depth: int = 50
     review_recipe: str = "review.yaml"
     summary_recipe: str = "summary.yaml"
     retry: RetrySettings = field(default_factory=RetrySettings)
     anchor: Path = field(default_factory=Path.cwd)
+
+    @property
+    def engine_module(self) -> str:
+        """Deprecated alias for default_engine, kept so code written against
+        the 0.1.x attribute keeps working. Prefer default_engine."""
+        return self.default_engine
 
     @classmethod
     def load(cls, anchor: Path | None = None, *, warn_on_missing: bool = True) -> "LooperConfig":
@@ -59,6 +71,16 @@ class LooperConfig:
         if path.exists():
             with open(path, "rb") as f:
                 raw = tomllib.load(f)
+            section = raw.get("gooseloop", {})
+            if "engine_module" in section:
+                if "default_engine" not in section:
+                    section["default_engine"] = section["engine_module"]
+                print(
+                    f"[gooseloop] {CONFIG_FILENAME}: `engine_module` is deprecated; "
+                    f"rename it to `default_engine` (same value, clearer meaning — "
+                    f"it is the engine a bare `gooseloop run` runs, not the only one).",
+                    file=sys.stderr,
+                )
             merged = _deep_merge(DEFAULTS, raw)
         else:
             if warn_on_missing:
@@ -76,7 +98,7 @@ class LooperConfig:
         return cls(
             default_model=section["default_model"],
             sessions_dir=_resolve(section["sessions_dir"], anchor),
-            engine_module=section["engine_module"],
+            default_engine=section["default_engine"],
             environment_config=_resolve(env_cfg, anchor) if env_cfg else None,
             max_queue_depth=int(section["max_queue_depth"]),
             review_recipe=section.get("review_recipe", "review.yaml"),
@@ -87,6 +109,46 @@ class LooperConfig:
             ),
             anchor=anchor,
         )
+
+
+def resolve_engine_module(anchor: Path, name: str) -> str:
+    """Resolve an engine name to a dotted module path (ADR 0009).
+
+    A dotted name is already a module path and passes through untouched. A
+    short name (`doc_drift`) is resolved by the same convention every real
+    loop root follows: engines live as subpackages of a top-level package
+    in the loop root (`engines/doc_drift/`). The scan checks every
+    top-level package in `anchor` plus the bare name itself.
+
+    Raises LookupError with an operator-actionable message when the name
+    matches nothing or is ambiguous — never guesses between candidates.
+    """
+    if "." in name:
+        return name
+
+    candidates: list[str] = []
+    # A top-level module (myengine.py) or package (myengine/) wins outright:
+    # the name IS the module path, no scan needed.
+    if (anchor / f"{name}.py").exists() or (anchor / name / "__init__.py").exists():
+        return name
+    for pkg_dir in sorted(anchor.iterdir()):
+        if not pkg_dir.is_dir() or not (pkg_dir / "__init__.py").exists():
+            continue
+        if (pkg_dir / name / "__init__.py").exists():
+            candidates.append(f"{pkg_dir.name}.{name}")
+
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise LookupError(
+            f"no engine named {name!r} found under {anchor} "
+            f"(looked for {name}.py, {name}/, or <top-level-package>/{name}/); "
+            f"pass a dotted module path to skip resolution"
+        )
+    raise LookupError(
+        f"engine name {name!r} is ambiguous under {anchor}: "
+        f"{', '.join(candidates)} — pass the dotted module path instead"
+    )
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

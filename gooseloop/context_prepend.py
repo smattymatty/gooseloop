@@ -90,7 +90,7 @@ def _raw_wrap(text: str) -> str:
     return "{% raw %}" + defused + "{% endraw %}"
 
 
-def _substitute_env(template: str, env: dict[str, str]) -> str:
+def substitute_env(template: str, env: dict[str, str]) -> str:
     def repl(m: re.Match[str]) -> str:
         name = m.group(1) or m.group(2)
         return env.get(name, "")
@@ -119,7 +119,7 @@ def _resolve_env_file(arg: str, env: dict[str, str], *, optional: bool) -> str:
 
 
 def _resolve_file(arg: str, env: dict[str, str], *, optional: bool) -> str:
-    path_str = _substitute_env(arg.strip(), env)
+    path_str = substitute_env(arg.strip(), env)
     if not path_str:
         if optional:
             return f"(file path resolved empty for '{arg}'; skipped)"
@@ -137,7 +137,7 @@ def _resolve_file(arg: str, env: dict[str, str], *, optional: bool) -> str:
 
 
 def _resolve_glob(arg: str, env: dict[str, str], *, optional: bool) -> str:
-    pattern = _substitute_env(arg.strip(), env)
+    pattern = substitute_env(arg.strip(), env)
     if not pattern:
         if optional:
             return f"(glob pattern resolved empty for '{arg}'; skipped)"
@@ -194,18 +194,34 @@ def substitute_env_in_prompt(doc: dict[str, Any], env: dict[str, str]) -> dict[s
     prompt = doc.get("prompt")
     if not isinstance(prompt, str) or not prompt:
         return doc
-    return {**doc, "prompt": _substitute_env(prompt, env)}
+    return {**doc, "prompt": substitute_env(prompt, env)}
+
+
+# The source kinds PROTOCOL §7 defines. gooseloop.introspect enumerates
+# and previews against this same tuple, so a new kind lands in one place.
+SOURCE_KINDS = ("env_file", "file", "glob", "env_method")
+
+
+def split_source(source: str) -> tuple[str, str]:
+    """Split a context source into (kind, arg).
+
+    Lenient: no colon yields kind "" — callers decide whether that is a
+    RuntimeError (render) or a failed preview (introspect).
+    """
+    if ":" not in source:
+        return "", source
+    kind, _, arg = source.partition(":")
+    return kind.strip(), arg
 
 
 def _resolve_source(source: str, env: dict[str, str], environment: Any, *,
                     optional: bool) -> str:
-    if ":" not in source:
+    kind, arg = split_source(source)
+    if not kind:
         raise RuntimeError(
             f"context source {source!r} missing 'kind:' prefix "
-            f"(expected one of env_file, file, glob, env_method)"
+            f"(expected one of {', '.join(SOURCE_KINDS)})"
         )
-    kind, _, arg = source.partition(":")
-    kind = kind.strip()
     if kind == "env_file":
         return _resolve_env_file(arg, env, optional=optional)
     if kind == "file":
@@ -216,7 +232,7 @@ def _resolve_source(source: str, env: dict[str, str], environment: Any, *,
         return _resolve_env_method(arg, environment)
     raise RuntimeError(
         f"context source kind {kind!r} is not supported "
-        f"(expected env_file, file, glob, env_method)"
+        f"(expected {', '.join(SOURCE_KINDS)})"
     )
 
 
@@ -307,7 +323,7 @@ def render_recipe_with_context(
         # survive verbatim (a recap can legitimately mention $HOME or
         # ${WINDOW_DAYS}). The context is also already raw-wrapped, so goose's
         # own templater leaves it alone.
-        substituted_prompt = _substitute_env(doc.get("prompt", ""), env)
+        substituted_prompt = substitute_env(doc.get("prompt", ""), env)
         doc = {**doc, "prompt": block_text + "\n\n" + substituted_prompt}
         doc.pop("context", None)  # consumed; goose doesn't need to see it
     else:

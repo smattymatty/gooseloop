@@ -15,8 +15,15 @@ from pathlib import Path
 from .text import Color, banner
 
 
-def new_session(sessions_dir: Path, model: str, engine_name: str) -> Path:
-    """Create a timestamped session directory and print a banner."""
+def new_session(sessions_dir: Path, model: str, engine_name: str,
+                engine_module: str | None = None) -> Path:
+    """Create a timestamped session directory and print a banner.
+
+    engine_module is the resolved dotted module path of the engine that
+    ran, alongside the short display slug in `engine` — without it a
+    session cannot be attributed to its real engine, only to the loop's
+    default (ADR 0010).
+    """
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
     session_dir = sessions_dir / ts
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -27,6 +34,8 @@ def new_session(sessions_dir: Path, model: str, engine_name: str) -> Path:
         "model": model,
         "engine": engine_name,
     }
+    if engine_module:
+        meta["engine_module"] = engine_module
     with open(session_dir / "session.meta.json", "w") as f:
         json.dump(meta, f, indent=2)
 

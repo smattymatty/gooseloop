@@ -42,6 +42,7 @@ from .protocol import (
     RoutingEntry,
     validate_review,
 )
+from .runlock import RunLock
 from .session import log_step, new_session
 from .extract import extract_json_with_provenance
 from .text import Color, banner, colored
@@ -94,14 +95,34 @@ class GooseLooper:
     # public entry
 
     def begin_loop(self) -> dict[str, Any]:
-        """Run one pipeline pass. Returns accounting summary."""
+        """Run one pipeline pass. Returns accounting summary.
+
+        Holds the loop root's run.lock for the whole pass (ADR 0010,
+        PROTOCOL section 13): raises RunLockHeldError before any phase
+        runs if another run is in flight. Library-level on purpose, so
+        embedders get the same protection as the CLI.
+        """
+        lock = RunLock(self.config.anchor)
+        lock.acquire(engine=self._engine_module(), session_id=None)
+        try:
+            return self._run_pass(lock)
+        finally:
+            lock.release()
+
+    def _engine_module(self) -> str:
+        return type(self.engine).__module__
+
+    def _run_pass(self, lock: RunLock) -> dict[str, Any]:
         runner_start = time.perf_counter()
         goose_calls = 0
         actions_ran = 0
         actions_skipped = 0
 
-        session_dir = (new_session(self.config.sessions_dir, self.model, self.engine.name)
+        session_dir = (new_session(self.config.sessions_dir, self.model, self.engine.name,
+                                   engine_module=self._engine_module())
                        if self.save else None)
+        if session_dir:
+            lock.annotate(session_id=session_dir.name)
 
         env_paths = self.environment.env_vars() if self.environment else {}
         ctx = Context(

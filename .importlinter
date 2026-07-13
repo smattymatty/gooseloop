@@ -9,6 +9,6 @@ name = ADR 0000 four-layer topology
 type = layers
 layers =
     gooseloop.__main__ : gooseloop.looper
-    gooseloop.goose : gooseloop.context_prepend : gooseloop.predicates : gooseloop.footer
+    gooseloop.goose : gooseloop.introspect : gooseloop.context_prepend : gooseloop.predicates : gooseloop.footer
     gooseloop.engine : gooseloop.phase : gooseloop.branch_policy : gooseloop.environment : gooseloop.contrib
     gooseloop.extract : gooseloop.session : gooseloop.config : gooseloop.recipe_merge : gooseloop.protocol : gooseloop.artifact : gooseloop.toolkit : gooseloop.text

@@ -8,61 +8,136 @@
 # doc-map.toml (set by [doc_drift] map = ... in gooseloop.toml); if it's
 # missing, the precheck tells you to copy this file.
 #
-# Each [[pair]] declares a CANONICAL source of truth and a DERIVED view that is
-# supposed to follow it. doc-drift flags a pair when a side changed since the
-# last time the two were settled, then drafts a patch to the derived side for
-# an operator to read and seal. Drafts are NEVER applied automatically.
+# ── THE MENTAL MODEL ─────────────────────────────────────────────────────────
 #
-# A side may be a FILE PATH (resolved relative to this file's directory, or
-# absolute / ~) or an http(s) URL (fetched live — use this to check the
-# *published* artifact, not just the file it was built from).
+# Every entry declares a relationship with a direction:
 #
-# FIELDS:
-#   id          stable identifier; the state cache keys off it, so don't rename
-#               casually. Required, unique.
-#   canonical   the source of truth (path or URL). Required.
-#   derived     the view that must follow it. A single value, or a list (one
-#               canonical, many derived views: id becomes "<id>::<name>").
-#               Required.
-#   note        pasted into the drift context so the model knows what "in sync"
-#               means for this pair. Optional but worth writing.
+#     CANONICAL (the source of truth)  ──must be followed by──▶  DERIVED (a view)
+#
+# Code is usually canonical; docs, wikis, and published pages are usually
+# derived. doc-drift watches both sides for change. When a side moves after the
+# pair was last settled, the pair becomes a drift candidate: the model reads
+# both sides, judges whether the derived view actually fell behind, and if so
+# drafts a patch to the derived side. An operator reads the draft and seals it.
+# Drafts are NEVER applied automatically.
+#
+# A side may be:
+#   - a FILE PATH — resolved relative to this file's directory (or absolute/~).
+#     Change is detected from git history, falling back to a content hash.
+#   - an http(s) URL — fetched live. Use this to check the PUBLISHED artifact,
+#     not just the file it was built from: it catches deploy lag and rendering
+#     drift that a file-only check can't see.
+#
+# ── FIELDS ───────────────────────────────────────────────────────────────────
+#
+#   id          Stable identifier. The state cache keys off it, so renaming
+#               resets the pair's memory. Required, unique.
+#   canonical   The source of truth: one path/URL, or a LIST (the derived view
+#               must agree with all of them). Required.
+#   derived     The view that must follow. One value, or a LIST (each gets its
+#               own pair, id becomes "<id>::<name>"). Required.
+#   note        Pasted verbatim into the model's context. This is the pair's
+#               prompt — see "WRITING GOOD NOTES" below. Optional, but the
+#               model has no other way to know what "in sync" means for you.
 #   intentional = true hard-suppresses the pair: a declared, permanent
 #               divergence that should never be flagged. Optional.
+#
+# ── WRITING GOOD NOTES ───────────────────────────────────────────────────────
+#
+# The note is the only place the model learns what this relationship means.
+# A one-liner works for simple pairs; for anything subtle, this shape earns
+# its keep:
+#
+#   1. What the derived view IS, and what "in sync" means for it.
+#   2. The specific invariants to verify (name the canonical file that governs
+#      each one, if there are several).
+#   3. The output discipline: quote the drifted claim, cite the file it
+#      contradicts, one flag per claim.
+#
+# A vague note ("keep these in sync") gets vague drafts. A note that states
+# checkable invariants gets drafts you can verify in thirty seconds.
 
-# A file→file pair: a code module is canonical, a doc derived from it must follow.
+
+# ═════════════════════════════════════════════════════════════════════════════
+# [[pair]] — one canonical, one derived view
+# ═════════════════════════════════════════════════════════════════════════════
+
+# The simplest shape: a code module is canonical, a doc must follow it.
 [[pair]]
 id = "config-reference"
 canonical = "../myrepo/src/settings.py"
 derived = "../myrepo/docs/configuration.md"
-note = "Every setting and default in the doc must match the constants in settings.py."
+note = "Every setting name and default value in the doc must match the constants in settings.py. Flag settings that are missing, renamed, or show a stale default; cite the constant."
 
-# A file→URL pair: check that the PUBLISHED page still matches its source.
-# Catches deploy lag and rendering drift that a file-only check can't see.
+# file → URL: check the PUBLISHED page, not just its source file.
 [[pair]]
 id = "pricing-page-live"
 canonical = "../myrepo/src/pricing.py"
 derived = "https://example.com/guide/pricing/"
-note = "The live pricing page must show the prices defined in pricing.py."
+note = "Every price, plan name, and limit on the live page must match pricing.py. Quote any figure that differs and cite the value it should show."
 
-# A [[collection]]: discover MANY derived views and check every one against the
-# shared canonical(s). New pages are picked up automatically. Discovery is one of:
-#   glob    — a filesystem pattern; one pair per matching file (a whole doc tree
-#             or wiki). No network.
-#   sitemap — a sitemap URL; one pair per <loc> whose path matches `match`.
-#   index   — an index page URL; one pair per <a href> whose path matches `match`.
-# `canonical` may be a single source or a list.
+# MANY canonicals: the derived view must agree with ALL of them.
+# Use this when one doc summarizes facts spread across several modules.
+[[pair]]
+id = "limits-reference"
+canonical = ["../myrepo/src/quotas.py", "../myrepo/src/rate_limits.py"]
+derived = "../myrepo/docs/limits.md"
+note = "Storage limits are governed by quotas.py; request limits by rate_limits.py. Every number in the doc must match its governing file — name which file each flagged claim contradicts."
 
-# Filesystem: check an entire docs/wiki tree against the product facts.
+# MANY derived views: each gets its own pair (id becomes "readme-sync::<name>").
+# Use this when several docs restate the same canonical facts.
+[[pair]]
+id = "readme-sync"
+canonical = "../myrepo/src/cli.py"
+derived = ["../myrepo/README.md", "../myrepo/docs/quickstart.md"]
+note = "Every CLI command, flag, and default shown must exist in cli.py with the same spelling and behaviour."
+
+# A declared, permanent divergence: intentional = true means "never flag this".
+# Keep the pair in the map anyway — it documents that the divergence is known
+# and chosen, so nobody re-adds it as a real check later.
+[[pair]]
+id = "legacy-v1-docs"
+canonical = "../myrepo/src/api.py"
+derived = "../myrepo/docs/v1-api-archive.md"
+intentional = true
+note = "Archived v1 docs intentionally describe the old API. Never flag."
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# [[collection]] — discover MANY derived views, check each against shared
+# canonical(s). New pages are picked up automatically on every run.
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Discovery is exactly one of:
+#   glob    — a filesystem pattern (supports **). One pair per matching file.
+#             No network. This is how a whole doc tree or wiki gets checked
+#             without listing every page.
+#   sitemap — a sitemap URL. One pair per <loc> whose URL path matches `match`.
+#   index   — any page with links (a blog index, a docs landing page). One
+#             pair per <a href> whose URL path matches `match`.
+#
+#   match   — a regex tested against the URL *path* (not the full URL). Used
+#             by sitemap/index discovery to select which links become pairs.
+
+# Filesystem: check an entire docs tree against shared product facts.
 [[collection]]
 id = "docs"
 canonical = ["../myrepo/src/pricing.py", "../myrepo/docs/product-facts.md"]
 glob = "../myrepo/docs/**/*.md"
-note = "No docs page may contradict canonical pricing, product names, or facts."
+note = "Product documentation. No page may contradict canonical pricing, product names, or facts. Quote each drifted claim and name the canonical source it contradicts."
 
-# Live site: check every post on a blog, discovered from its sitemap.
+# Live site via sitemap: every blog post, discovered automatically.
 [[collection]]
 id = "blog"
 canonical = ["../myrepo/docs/product-facts.md"]
-sitemap = "https://example.com/sitemap.xml"   # or: index = "https://example.com/blog/"
-match = "^/blog/.+"                            # URL-path regex selecting the posts
-note = "No blog post may contradict the canonical product facts."
+sitemap = "https://example.com/sitemap.xml"
+match = "^/blog/.+"
+note = "Published blog posts. Flag only contradictions of the canonical product facts — posts are allowed to be incomplete, just not wrong."
+
+# Live site via index page: same idea when there's no sitemap.
+[[collection]]
+id = "changelog-pages"
+canonical = ["../myrepo/CHANGELOG.md"]
+index = "https://example.com/changelog/"
+match = "^/changelog/.+"
+note = "Each published changelog page must match its entry in CHANGELOG.md: same version numbers, same changes, nothing silently dropped."

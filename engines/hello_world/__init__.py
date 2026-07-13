@@ -20,6 +20,6 @@ summary.yaml in a consuming project, then run `gooseloop run`.
 from .engine import HelloEngine, HelloEnvironment
 
 engine = HelloEngine
-environment = HelloEnvironment
+environment = HelloEnvironment(names=["Canada", "Goose", "Canadian Goose"])
 
 __all__ = ["HelloEngine", "HelloEnvironment", "engine", "environment"]

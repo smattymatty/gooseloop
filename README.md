@@ -79,7 +79,10 @@ where `engines/` is importable) and select one with `-e <module>`:
 | `git_recap` | Summarises your recent commits across configured repos into a changelog. Configure `[git_recap]` in `gooseloop.toml`. | `python3 -m gooseloop run -e engines.git_recap` |
 | `doc_drift` | Finds derived docs/pages that fell behind their canonical source and drafts a patch to seal. Configure `[doc_drift]`, then `cp doc-map.example.toml doc-map.toml` and edit. | `python3 -m gooseloop run -e engines.doc_drift` |
 
-Drop `-e` to run whatever `[gooseloop] engine_module` points at (`hello_world`
+Engines can also be run by short name — `python3 -m gooseloop run doc_drift`
+resolves to `engines.doc_drift` by scanning the loop root's packages, and
+`python3 -m gooseloop engines` lists everything it finds. Drop the engine
+argument to run whatever `[gooseloop] default_engine` points at (`hello_world`
 by default). The installed `gooseloop` console script is equivalent to
 `python3 -m gooseloop`, but the built-in engines above still need a checkout on
 the path. Add `--review-only` to any of them to stop after the review phase.
@@ -110,15 +113,17 @@ An engine with no fit subclasses bare `Environment` and writes one method.
 ## CLI
 
 ```
-gooseloop run                      # run the configured engine, one pass
+gooseloop run                      # run the default engine, one pass
+gooseloop run doc_drift            # run any engine by short name
 gooseloop run --review-only        # stop after review
 gooseloop run --review-overlay x.yaml --summary-overlay y.yaml
 gooseloop recipe --resolve review  # print fully-merged recipe
-gooseloop engines                  # list known engines from gooseloop.toml
+gooseloop engines                  # list every engine in the loop root
 ```
 
-`gooseloop.toml` at the project root configures which engine, which recipes,
-retry tuning, sessions dir.
+`gooseloop.toml` at the project root configures the default engine, recipes,
+retry tuning, sessions dir. One loop root can host many engines; the default
+is only what a bare `gooseloop run` runs.
 
 ## License
 

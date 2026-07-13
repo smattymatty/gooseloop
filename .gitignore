@@ -13,6 +13,8 @@ dist/
 # NOTE: .gitignore has no inline comments; a trailing "# ..." becomes part of
 # the pattern and silently matches nothing. Keep every comment on its own line.
 reviews/
+# present only while a run is in flight (PROTOCOL section 13)
+run.lock
 # git-recap engine output (configurable; default name)
 recaps/
 # hello-world engine output

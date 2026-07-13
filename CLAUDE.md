@@ -109,7 +109,7 @@ hello_world, git_recap, and doc_drift exist to be read, run, and copied. Once a
 project has its own engine, the examples can be deleted wholesale; the framework
 does not depend on any of them. Keep them while you are learning the shape;
 remove them when they are noise. `gooseloop.toml` ships pointing at hello_world
-as the reference; a real project repoints `engine_module` at its own.
+as the reference; a real project repoints `default_engine` at its own.
 
 ## Conventions
 

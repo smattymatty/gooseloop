@@ -3,8 +3,8 @@ title: "hello-world review"
 description: "Read NAMES, emit routing[] of greet invocations."
 
 context:
-  - label: "NAMES IN SCOPE"
-    source: env_method:names_listing
+- label: "NAMES IN SCOPE"
+  source: env_method:names_listing
 
 prompt: |
   You are the review phase of the hello-world reference engine.

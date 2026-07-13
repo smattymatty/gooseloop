@@ -80,7 +80,7 @@ correct.
 - A helper serving two Machinery modules must be hoisted to Foundation even
   when that feels premature. Forcing the "where does this belong?" question
   at the second consumer is the point, but the friction is real.
-- Dynamic coupling — `env_method:` lookups by name, `engine_module` loading
+- Dynamic coupling — `env_method:` lookups by name, `default_engine` loading
   from config — is invisible to both rules. It stays a review concern.
 - The layer table and `.importlinter` must not drift; a new module is
   classified in the commit that adds it.
