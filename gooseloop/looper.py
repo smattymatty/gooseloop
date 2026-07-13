@@ -19,6 +19,7 @@ The looper knows nothing about prospects, scoring, or any engine concept.
 
 import dataclasses
 import os
+import re
 import sys
 import time
 from collections import deque
@@ -42,6 +43,7 @@ from .protocol import (
     RoutingEntry,
     validate_review,
 )
+from .recipe_merge import load_layered_recipe
 from .runlock import RunLock
 from .session import log_step, new_session
 from .extract import extract_json_with_provenance
@@ -80,8 +82,16 @@ class GooseLooper:
         review_only: bool = False,
         review_overlays: Optional[list[Path]] = None,
         summary_overlays: Optional[list[Path]] = None,
+        engine_module: Optional[str] = None,
     ):
         self.engine = engine
+        # The RESOLVED module the engine was loaded from (the CLI passes
+        # it). The class's own __module__ is only a fallback — engines
+        # routinely define their class in a submodule (engine.py) and
+        # expose it at the package __init__, and run.lock/session.meta
+        # should name the package the operator ran, not the file the
+        # class happens to live in.
+        self.engine_module = engine_module or type(engine).__module__
         self.environment = environment
         self.config = config or LooperConfig.load()
         self.model = model or engine.default_model() or self.config.default_model
@@ -110,7 +120,7 @@ class GooseLooper:
             lock.release()
 
     def _engine_module(self) -> str:
-        return type(self.engine).__module__
+        return self.engine_module
 
     def _run_pass(self, lock: RunLock) -> dict[str, Any]:
         runner_start = time.perf_counter()
@@ -139,6 +149,8 @@ class GooseLooper:
             except Exception as e:
                 print(colored(f"\nPrecheck failed: {e}", Color.RED), file=sys.stderr)
                 raise
+
+        self._verify_output_env_contracts()
 
         pipeline = self.engine.pipeline(ctx)
         if not isinstance(pipeline, Pipeline):
@@ -419,17 +431,20 @@ class GooseLooper:
         recipe_path = self._resolve_recipe_path(recipe)
         param_env = _params_to_env(params)
 
-        # If the policy can compute an output path, inject it as OUTPUT_PATH
-        # so the recipe writes to exactly the file the predicate later checks.
-        # Without this the recipe and the predicate could (and did) disagree
-        # on filenames — recipe wrote ${SHA}.md, predicate looked for
-        # <slug>-<sha8>.md, every successful write triggered a fake "transient
-        # error" retry until max_retries.
+        # If the policy can compute an output path, inject it under the
+        # policy's output_env name (default OUTPUT_PATH) so the recipe
+        # writes to exactly the file the predicate later checks. Without
+        # this the recipe and the predicate could (and did) disagree on
+        # filenames — recipe wrote ${SHA}.md, predicate looked for
+        # <slug>-<sha8>.md, every successful write triggered a fake
+        # "transient error" retry until max_retries. The recipe's reference
+        # to ${<output_env>} is verified before the pass runs (ADR 0011,
+        # _verify_output_env_contracts).
         out_path: Path | None = None
         if policy.output_path is not None:
             out_path = policy.output_path(params)
             if out_path is not None:
-                param_env["OUTPUT_PATH"] = str(out_path)
+                param_env[policy.output_env] = str(out_path)
 
         if policy.predicate is not None:
             predicate: Optional[Callable[[str], bool]] = policy.predicate
@@ -591,6 +606,51 @@ class GooseLooper:
             return None
 
     # ------------------------------------------------------------------
+    # ADR 0011: output_env contract verification
+
+    def _verify_output_env_contracts(self) -> None:
+        """Refuse the pass if a policy's output_env is never referenced by
+        its recipe (ADR 0011).
+
+        Only policies that compute an output path are checked: they are the
+        ones whose injected env var, success predicate, and ledger entry
+        must agree with the recipe's write target. The check reads the
+        merged recipe (base + .local overlay) BEFORE env substitution —
+        rendering replaces ${VAR} with its value, so the reference only
+        exists in the pre-substitution prompt. Recipes whose file does not
+        exist are skipped: routing to them fails loud on its own, and test
+        doubles register policies for recipes never read from disk.
+        """
+        for recipe_name, policy in self.engine.branch_policies.items():
+            if policy.output_path is None:
+                continue
+            if not _ENV_NAME_RE.match(policy.output_env):
+                raise RuntimeError(
+                    f"BranchPolicy for {recipe_name!r}: output_env "
+                    f"{policy.output_env!r} is not a valid env var name "
+                    f"(letters, digits, underscore; no leading digit)."
+                )
+            recipe_path = Path(self._resolve_recipe_path(recipe_name))
+            if not recipe_path.exists():
+                continue
+            merged = load_layered_recipe(
+                recipe_path,
+                local_path=_local_overlay_for(recipe_path),
+            )
+            prompt = str(merged.get("prompt") or "")
+            if not _prompt_references_var(prompt, policy.output_env):
+                raise RuntimeError(
+                    f"recipe {recipe_path} never references "
+                    f"${{{policy.output_env}}}, but the BranchPolicy for "
+                    f"{recipe_name!r} injects the output path under that "
+                    f"name. The recipe's write target and the framework's "
+                    f"success check would silently disagree. Fix the recipe "
+                    f"to write to ${{{policy.output_env}}}, or set the "
+                    f"policy's output_env to the variable the recipe "
+                    f"actually uses (ADR 0011)."
+                )
+
+    # ------------------------------------------------------------------
 
     def _resolve_recipe_path(self, recipe: str) -> str:
         """Look up a body recipe by name in the engine's recipes directory.
@@ -614,6 +674,19 @@ def _review_output_parseable(output: str) -> bool:
     "is there enough output to try."
     """
     return extract_json_with_provenance(output) is not None
+
+
+_ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def _prompt_references_var(prompt: str, var: str) -> bool:
+    """True if the prompt references ${VAR} or bare $VAR.
+
+    Both spellings are what substitute_env resolves at render time, so
+    both satisfy the ADR 0011 contract check.
+    """
+    pattern = r"\$\{" + re.escape(var) + r"\}|\$" + re.escape(var) + r"(?![A-Za-z0-9_])"
+    return re.search(pattern, prompt) is not None
 
 
 def _params_to_env(params: dict[str, Any]) -> dict[str, str]:

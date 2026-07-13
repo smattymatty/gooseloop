@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `BranchPolicy.output_env` (ADR 0011, PROTOCOL §5): the engine names the
+  env var its computed output path is injected under (default
+  `OUTPUT_PATH`, so existing engines are untouched). The contract is
+  verified, not trusted: before any phase runs, the framework checks that
+  each registered recipe references `${<output_env>}` and refuses the pass
+  with a hard error on a mismatch, so no model call is spent on a
+  recipe/policy pairing that would silently disagree. hello_world now
+  demonstrates the wire explicitly (`output_env="GREETING_FILE"` in the
+  engine, `${GREETING_FILE}` in greet.yaml) and drops the reserved,
+  unenforced `intent` tag from the teaching example.
 - `run.lock`: one run at a time per loop root (ADR 0010, PROTOCOL §13).
   `begin_loop()` holds `<loop root>/run.lock` for the whole pass; a second
   run is refused before doing any work — CLI exit code 3, library callers

@@ -170,14 +170,15 @@ class BranchPolicy:
     skip_when: Callable[[dict], bool | str] | None = None
     output_path: Callable[[dict], Path | None] | None = None
     predicate: Callable[[str], bool] | None = None
-    intent: Literal["produce", "edit", "edit-or-produce"] | None = None
+    intent: Literal["produce", "edit", "edit-or-produce"] | None = None  # reserved, unenforced
+    output_env: str = "OUTPUT_PATH"
 
 class MyEngine(Engine):
     branch_policies = {
         "to-outreach": BranchPolicy(
             skip_when=lambda p: (output_dir("outreach") / f"{p['slug']}_draft.md").exists(),
             output_path=lambda p: output_dir("outreach") / f"{p['slug']}_draft.md",
-            intent="produce",
+            output_env="DRAFT_FILE",   # recipe writes to ${DRAFT_FILE}
         ),
         # Unregistered recipes get BranchPolicy(): no skip, no path tracking,
         # default transient-error-only predicate, intent unchecked.
@@ -187,6 +188,28 @@ class MyEngine(Engine):
 The framework calls `engine.branch_policies.get(recipe_name, BranchPolicy())`
 for each routing entry. Defaults are sensible — an engine with no special-case
 recipes does not need to register anything.
+
+### The output_path chain (ADR 0011)
+
+One computed path drives three things that must never disagree:
+
+1. `output_path(params)` computes the file the recipe must write.
+2. The framework injects that path into the phase's env under the name in
+   `output_env` (default `OUTPUT_PATH`); the recipe writes to
+   `${<output_env>}` verbatim.
+3. The same path derives the default success predicate (`file_nonempty`,
+   unless `predicate` overrides it) and is recorded in the session ledger
+   on success.
+
+The contract is verified, not trusted: before any phase runs, the framework
+checks that each registered recipe's merged prompt (base plus `.local`
+overlay, before env substitution) references `${<output_env>}` when its
+policy computes an output path. A miss refuses the whole pass with a hard
+error, before any model call is spent. A recipe copied from an engine with
+a different `output_env` therefore fails loud at start, never silently.
+
+`intent` is reserved for future intent-reconciliation checks; nothing
+enforces it today.
 
 ## 6. Recipe overlay merge
 

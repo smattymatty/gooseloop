@@ -1,17 +1,18 @@
 version: "1.0.0"
 title: "greet one name"
-description: "Body phase: write a greeting for one name into GREETINGS_DIR/${NAME}.txt."
+description: "Body phase: write a greeting for one name into GREETING_FILE."
 
 prompt: |
   Write a one-line greeting addressed to ${NAME}.
 
   Save the greeting to the EXACT path:
 
-      ${OUTPUT_PATH}
+      ${GREETING_FILE}
 
-  (This path is computed by the framework from the routing params.
-  Do NOT use any other filename.) Ensure the parent directory exists.
-  Output nothing else of substance.
+  (The engine's BranchPolicy computes this path from the routing params
+  and the framework injects it as GREETING_FILE; the run refuses to start
+  if this recipe stops referencing it. Do NOT use any other filename.)
+  Ensure the parent directory exists. Output nothing else of substance.
 
 settings:
   goose_provider: "openrouter"

@@ -384,18 +384,19 @@ def test_hello_world_review_recipe_uses_literal_sentinels(tmp_path):
 def test_hello_world_greet_recipe_regression(tmp_path):
     """End-to-end: greet.yaml must render with substituted env vars.
     Pins the 2026-06-04 hello-world regression (env var substitution
-    in prompt prose). Now the recipe uses ${NAME} and ${OUTPUT_PATH}
-    (the latter injected by the framework from BranchPolicy.output_path)."""
+    in prompt prose). The recipe uses ${NAME} and ${GREETING_FILE}
+    (the latter injected by the framework from BranchPolicy.output_path
+    under the policy's output_env name, ADR 0011)."""
     import yaml as _y
     greet = Path(__file__).resolve().parents[1] / "engines/hello_world/recipes/greet.yaml"
     doc = _y.safe_load(greet.read_text())
     rendered = render_recipe_with_context(
-        doc, extra_env={"NAME": "world", "OUTPUT_PATH": "/tmp/g/world.txt"},
+        doc, extra_env={"NAME": "world", "GREETING_FILE": "/tmp/g/world.txt"},
     )
     assert rendered is not None
     out = _read(rendered)
     assert "${NAME}" not in out["prompt"]
-    assert "${OUTPUT_PATH}" not in out["prompt"]
+    assert "${GREETING_FILE}" not in out["prompt"]
     assert "world" in out["prompt"]
     assert "/tmp/g/world.txt" in out["prompt"]
 

@@ -53,6 +53,12 @@ class HelloEnvironment(Environment):
 def _greeting_path(params: dict) -> Path | None:
     """Compute the output path for one greet invocation.
 
+    The framework injects the path this returns into the greet phase's env
+    under the policy's output_env name (GREETING_FILE below); greet.yaml
+    writes to ${GREETING_FILE} verbatim. The same path drives the phase's
+    success check and its ledger entry, so all three always agree
+    (ADR 0011, PROTOCOL §5).
+
     Reads GREETINGS_DIR from the env vars the looper builds at run time,
     not at engine-construction time, because the directory is environment-
     owned. Returns None if no `name` param was provided.
@@ -75,10 +81,15 @@ class HelloEngine(Engine):
     def recipes_dir(self) -> str:
         return str(_HERE / "recipes")
 
+    # output_path computes where one greet invocation writes; output_env
+    # names the env var the framework injects that path under, so the
+    # recipe's ${GREETING_FILE} and the success check share one source of
+    # truth. The framework refuses the run if greet.yaml stops referencing
+    # ${GREETING_FILE} (ADR 0011).
     branch_policies = {
         "greet": BranchPolicy(
             output_path=_greeting_path,
-            intent="produce",
+            output_env="GREETING_FILE",
         ),
     }
 

@@ -282,18 +282,169 @@ def test_routing_phase_no_output_path_skips_env_injection(tmp_path):
     assert "OUTPUT_PATH" not in env
 
 
-def test_shipped_recipes_use_output_path_convention():
-    """Pin the recipe-side contract: any body recipe that writes a file
-    must use ${OUTPUT_PATH} so it agrees with the framework-injected
-    path. Earlier mismatch cost token budget on every recap."""
+def test_shipped_recipes_reference_their_policy_output_env():
+    """Pin the recipe-side contract (ADR 0011): a body recipe that writes a
+    file must reference ${<output_env>} so it agrees with the framework-
+    injected path. Earlier mismatch cost token budget on every recap.
+    hello_world uses a custom name (GREETING_FILE) to teach the wire;
+    git_recap keeps the OUTPUT_PATH default — the pair pins both modes."""
     from pathlib import Path as _P
     root = _P(__file__).resolve().parents[1]
-    for rel in [
-        "engines/hello_world/recipes/greet.yaml",
-        "engines/git_recap/recipes/summarize-commit.yaml",
+    for rel, var in [
+        ("engines/hello_world/recipes/greet.yaml", "GREETING_FILE"),
+        ("engines/git_recap/recipes/summarize-commit.yaml", "OUTPUT_PATH"),
     ]:
         text = (root / rel).read_text()
-        assert "${OUTPUT_PATH}" in text, f"{rel} must reference ${{OUTPUT_PATH}}"
+        assert f"${{{var}}}" in text, f"{rel} must reference ${{{var}}}"
+
+
+def test_shipped_engines_pass_output_env_verification(tmp_path):
+    """The looper's ADR 0011 pre-run check accepts every shipped engine's
+    policy/recipe pairing as it exists on disk."""
+    # importlib, not attribute-style import: each engine package's
+    # __init__.py exposes an `engine` ATTRIBUTE (the class) that shadows
+    # the `engine` submodule on `import pkg.engine as x`.
+    import importlib
+    hw = importlib.import_module("engines.hello_world.engine")
+    gr = importlib.import_module("engines.git_recap.engine")
+
+    for engine in [
+        hw.HelloEngine(),
+        gr.GitRecapEngine(output_dir=tmp_path),
+    ]:
+        looper = GooseLooper(
+            engine=engine,
+            config=_make_config(tmp_path),
+            save=False,
+        )
+        looper._verify_output_env_contracts()  # must not raise
+
+
+# ---- ADR 0011: output_env injection + contract verification -------
+
+def _engine_with_recipe(tmp_path: Path, prompt: str, policy: BranchPolicy):
+    """A minimal engine whose recipes dir holds one real greet.yaml."""
+    recipes = tmp_path / "recipes"
+    recipes.mkdir(exist_ok=True)
+    (recipes / "greet.yaml").write_text(
+        'version: "1.0.0"\ntitle: "greet"\ndescription: "d"\n'
+        f"prompt: |\n  {prompt}\n"
+    )
+
+    class _E(_RecordingEngine):
+        def recipes_dir(self) -> str:
+            return str(recipes)
+
+    engine = _E()
+    engine.branch_policies = {"greet": policy}
+    return engine
+
+
+def test_routing_phase_injects_under_custom_output_env(tmp_path):
+    """ADR 0011: output_env names the env var the computed path lands in."""
+    from pathlib import Path as _P
+
+    engine = _RecordingEngine()
+    engine.branch_policies = {
+        "greet": BranchPolicy(
+            output_path=lambda p: _P(f"/tmp/x/{p['name']}.txt"),
+            output_env="GREETING_FILE",
+        ),
+    }
+    looper = GooseLooper(
+        engine=engine,
+        environment=_SilentEnv(),
+        config=_make_config(tmp_path),
+        save=False,
+    )
+    phase = looper._phase_from_routing(
+        "greet", {"name": "alice"}, engine.branch_policies["greet"],
+    )
+    env = phase.build_env(Context(model="m", session_dir=None, base_env={}))
+    assert env["GREETING_FILE"] == "/tmp/x/alice.txt"
+    assert "OUTPUT_PATH" not in env
+
+
+def test_output_env_mismatch_refuses_pass_before_any_model_call(
+        tmp_path, patched_looper):
+    """The recipe writes to ${OUTPUT_PATH} but the policy injects under
+    GREETING_FILE: the pass must refuse before goose is ever invoked."""
+    engine = _engine_with_recipe(
+        tmp_path,
+        "Write to ${OUTPUT_PATH}.",
+        BranchPolicy(output_path=lambda p: Path("/tmp/x/a.txt"),
+                     output_env="GREETING_FILE"),
+    )
+    looper = GooseLooper(
+        engine=engine,
+        environment=_SilentEnv(),
+        config=_make_config(tmp_path),
+        save=False,
+    )
+    with pytest.raises(RuntimeError, match=r"GREETING_FILE"):
+        looper.begin_loop()
+    assert patched_looper.calls == []
+
+
+def test_output_env_match_passes_verification(tmp_path, patched_looper):
+    """${GREETING_FILE} in the prompt satisfies the check; the pass runs."""
+    engine = _engine_with_recipe(
+        tmp_path,
+        "Write to ${GREETING_FILE}.",
+        BranchPolicy(output_path=lambda p: Path("/tmp/x/a.txt"),
+                     output_env="GREETING_FILE"),
+    )
+    looper = GooseLooper(
+        engine=engine,
+        environment=_SilentEnv(),
+        config=_make_config(tmp_path),
+        save=False,
+    )
+    result = looper.begin_loop()
+    assert result["review_status"] == "done"
+
+
+def test_output_env_bare_dollar_form_accepted(tmp_path):
+    """substitute_env resolves both ${VAR} and $VAR, so both satisfy the
+    contract check — but $VARSUFFIX must not count as a $VAR reference."""
+    from gooseloop.looper import _prompt_references_var
+    assert _prompt_references_var("write to ${GREETING_FILE}", "GREETING_FILE")
+    assert _prompt_references_var("write to $GREETING_FILE now", "GREETING_FILE")
+    assert not _prompt_references_var("write to $GREETING_FILES", "GREETING_FILE")
+    assert not _prompt_references_var("no reference here", "GREETING_FILE")
+
+
+def test_output_env_missing_recipe_file_is_skipped(tmp_path, patched_looper):
+    """A registered policy whose recipe file doesn't exist on disk is not
+    checked: routing to it fails loud on its own, and test doubles register
+    policies for recipes never read from disk."""
+    engine = _RecordingEngine()  # greet.yaml resolves to a nonexistent path
+    looper = GooseLooper(
+        engine=engine,
+        environment=_SilentEnv(),
+        config=_make_config(tmp_path),
+        save=False,
+    )
+    looper._verify_output_env_contracts()  # must not raise
+
+
+def test_output_env_invalid_name_refused(tmp_path):
+    """output_env must be a valid env var name; ${GREETING-FILE} would
+    never substitute, so the policy is refused up front."""
+    engine = _engine_with_recipe(
+        tmp_path,
+        "Write to ${GREETING-FILE}.",
+        BranchPolicy(output_path=lambda p: Path("/tmp/x/a.txt"),
+                     output_env="GREETING-FILE"),
+    )
+    looper = GooseLooper(
+        engine=engine,
+        environment=_SilentEnv(),
+        config=_make_config(tmp_path),
+        save=False,
+    )
+    with pytest.raises(RuntimeError, match="valid env var name"):
+        looper._verify_output_env_contracts()
 
 
 def test_phase_banners_include_step_progress(tmp_path, patched_looper, capsys):

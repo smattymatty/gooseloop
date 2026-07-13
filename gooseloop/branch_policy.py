@@ -29,13 +29,21 @@ Intent = Literal["produce", "edit", "edit-or-produce"]
 class BranchPolicy:
     """Per-recipe rules. All fields optional; the default is the no-op policy.
 
+    output_path: called with the routing entry's params dict to compute the
+        deterministic file path the recipe must write. The framework injects
+        the computed path into the phase's env under the name in
+        `output_env`, so the recipe writes to ${OUTPUT_PATH} (or
+        ${<output_env>}) verbatim. The same path derives the default success
+        predicate (file_nonempty) and is recorded in the session ledger on
+        success — the write target, the check, and the report can never
+        disagree (ADR 0011).
+    output_env: the env var name the computed output path is injected
+        under. The framework verifies before any phase runs that the
+        recipe's prompt references ${<output_env>}; a mismatch is a hard
+        error, never a silent no-op (ADR 0011).
     skip_when: called with the routing entry's params dict.
         Truthy return skips the phase. A str return is used as the
         skip reason in the session log.
-    output_path: called with the params dict to compute the deterministic
-        file path the recipe is expected to write. The framework uses this
-        to derive a default success predicate (file_nonempty) and to log
-        the path on success.
     predicate: explicit success predicate override. Takes the recipe's
         stdout. If unset and output_path is set, the framework derives a
         file_nonempty predicate from output_path.
@@ -47,3 +55,4 @@ class BranchPolicy:
     output_path: Optional[Callable[[dict[str, Any]], Optional[Path]]] = None
     predicate: Optional[Callable[[str], bool]] = None
     intent: Optional[Intent] = None
+    output_env: str = "OUTPUT_PATH"
