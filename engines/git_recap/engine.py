@@ -170,14 +170,35 @@ class GitRecapEnvironment(Environment):
         return proc.stdout.strip() if proc.returncode == 0 else ""
 
     def resolved_author(self) -> str:
+        """The email git-recap filters commits by.
+
+        author="auto" means "read it from the first repo's git
+        user.email". If that lookup comes back empty — a container or CI
+        that can't see the host git config, an unconfigured repo — we
+        raise rather than fall back to a sentinel. A resolved-to-"auto"
+        string fed to `git log --author=auto` matches zero commits and an
+        empty one matches every author; both are silent, wrong journals.
+        Fail loud instead (this engine's precheck doctrine)."""
         if self._resolved_author is None:
             if self.author != "auto":
                 self._resolved_author = self.author
             else:
                 first = self.repos[0] if self.repos else None
-                self._resolved_author = (
+                resolved = (
                     self._git(first, "config", "user.email") if first else ""
-                ) or "auto"
+                )
+                if not resolved:
+                    raise RuntimeError(
+                        'git-recap: author is "auto" but git user.email is '
+                        f"unset (git config user.email returned nothing in "
+                        f"{first}). This is common in a container or CI that "
+                        "can't read your host git config. Set the author "
+                        "explicitly in gooseloop.toml:\n"
+                        '  [git_recap]\n  author = "you@example.com"\n'
+                        "Left as-is the author filter matches zero commits, "
+                        "and every journal comes back silently empty."
+                    )
+                self._resolved_author = resolved
         return self._resolved_author
 
     def _fresh_range(self, repo: Path) -> list[str]:
@@ -347,6 +368,11 @@ class GitRecapEngine(Engine):
                 f"git-recap: these paths are not git repositories:\n  {paths}\n"
                 f"Each [git_recap] repos entry must contain a .git folder."
             )
+        # Resolve the author now, loud: author="auto" against a git that
+        # can't read user.email would otherwise build a filter matching no
+        # commit, and every journal would come back silently empty. Repos
+        # are validated above, so the first-repo lookup is safe here.
+        env.resolved_author()
         env.daily_dir.mkdir(parents=True, exist_ok=True)
         env.weekly_dir.mkdir(parents=True, exist_ok=True)
 

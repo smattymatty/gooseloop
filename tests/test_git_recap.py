@@ -9,6 +9,7 @@ plumbing); no goose calls anywhere.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from datetime import date
 from pathlib import Path
@@ -312,6 +313,45 @@ def test_precheck_creates_journal_dirs(tmp_path):
     GitRecapEngine(env=env).precheck(_ctx(env))
     assert env.daily_dir.is_dir()
     assert env.weekly_dir.is_dir()
+
+
+def _auto_env(tmp_path: Path, repos: list[Path]) -> GitRecapEnvironment:
+    env = _env(tmp_path, repos)
+    env.author = "auto"
+    return env
+
+
+def test_author_auto_resolves_from_git_config(tmp_path):
+    repo = _make_repo(tmp_path / "r1")  # sets user.email test@example.com
+    env = _auto_env(tmp_path, [repo])
+    assert env.resolved_author() == "test@example.com"
+
+
+def _repo_without_email(tmp_path: Path, monkeypatch) -> Path:
+    """A git repo with no resolvable user.email — the container/CI case.
+    Point git's global+system config at nothing so the host operator's
+    own git identity can't leak in and mask the unset state under test."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    repo = tmp_path / "r1"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    return repo
+
+
+def test_author_auto_fails_loud_when_git_email_unset(tmp_path, monkeypatch):
+    # Must raise, not fall back to a sentinel that filters out every commit.
+    repo = _repo_without_email(tmp_path, monkeypatch)
+    env = _auto_env(tmp_path, [repo])
+    with pytest.raises(RuntimeError, match="user.email is unset"):
+        env.resolved_author()
+
+
+def test_precheck_fails_loud_on_unresolvable_author(tmp_path, monkeypatch):
+    repo = _repo_without_email(tmp_path, monkeypatch)
+    env = _auto_env(tmp_path, [repo])
+    with pytest.raises(RuntimeError, match="user.email is unset"):
+        GitRecapEngine(env=env).precheck(_ctx(env))
 
 
 # ---- policies wire output paths -----------------------------------------
