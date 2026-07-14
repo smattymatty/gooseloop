@@ -28,7 +28,8 @@ def _unprepared(recipe_path, extra_env=None, **kwargs):
 
 def _canned(mapping):
     def run(recipe_path, model, extra_env=None, *, max_retries=6,
-            base_delay=5, success_predicate=None, label=None):
+            base_delay=5, success_predicate=None, label=None, stats=None,
+            sandbox=None):
         for stem, output in mapping.items():
             if stem in recipe_path:
                 return output

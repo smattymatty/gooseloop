@@ -25,7 +25,8 @@ class _FakeGoose:
         self.results = list(results)
         self.calls: list[str] = []
 
-    def __call__(self, recipe_path: str, model: str, extra_env=None) -> tuple[str, int]:
+    def __call__(self, recipe_path: str, model: str, extra_env=None,
+                 sandbox=None) -> tuple[str, int]:
         self.calls.append(recipe_path)
         idx = min(len(self.calls) - 1, len(self.results) - 1)
         return self.results[idx]
@@ -141,3 +142,38 @@ def test_exhaustion_error_names_the_label_not_the_temp_path(monkeypatch, sleeps)
             max_retries=1, label="review",
         )
     assert "tmpabc123" not in str(exc_info.value)
+
+
+def test_attempt_log_records_every_invocation(monkeypatch, sleeps):
+    fake = _FakeGoose(("server error: upstream hiccup", 0),
+                      ("rate limit exceeded", 0),
+                      ("recovered", 0))
+    _patch_goose(monkeypatch, fake)
+    stats: dict = {}
+    out = run_goose_with_retry("r.yaml", "model", base_delay=7, stats=stats)
+    assert out == "recovered"
+    log = stats["attempt_log"]
+    assert [(e["attempt"], e["outcome"]) for e in log] == [
+        (1, "transient-error"), (2, "rate-limited"), (3, "ok")]
+    # Non-final attempts keep their full output; the final one defers to
+    # the transcript the caller persists (no double storage).
+    assert log[0]["output"] == "server error: upstream hiccup"
+    assert log[1]["output"] == "rate limit exceeded"
+    assert log[2]["output"] is None
+    assert log[0]["retry_delay_s"] == 7
+    assert log[1]["retry_delay_s"] == 65  # the rate-limit window
+    assert all("duration_s" in e and "returncode" in e for e in log)
+
+
+def test_attempt_log_on_exhaustion_keeps_every_failure(monkeypatch, sleeps):
+    fake = _FakeGoose(*[("server error: again", 0)] * 2)
+    _patch_goose(monkeypatch, fake)
+    stats: dict = {}
+    with pytest.raises(RuntimeError):
+        run_goose_with_retry("r.yaml", "model", max_retries=2, base_delay=1,
+                             stats=stats)
+    log = stats["attempt_log"]
+    assert [e["outcome"] for e in log] == ["transient-error", "transient-error"]
+    assert log[0]["output"] == "server error: again"
+    assert log[1]["output"] is None            # it IS stats["last_output"]
+    assert stats["last_output"] == "server error: again"

@@ -170,7 +170,7 @@ def test_routing_dict_entries_default_missing_fields():
     p = _payload(routing=[{"recipe": "summarize-commit"}])
     out = validate_review(p)
     assert out["routing"] == [
-        {"recipe": "summarize-commit", "params": {}, "reason": ""},
+        {"recipe": "summarize-commit", "params": {}, "reason": "", "routed_by": "model"},
     ]
 
 
@@ -190,3 +190,13 @@ def test_routing_non_dict_params_becomes_empty():
     p = _payload(routing=[{"recipe": "x", "params": "not a dict"}])
     out = validate_review(p)
     assert out["routing"][0]["params"] == {}
+
+
+def test_string_insights_normalises_to_one_element_list():
+    """Caught live 2026-07-13: a review shipped insights as one prose
+    string; the run proceeded but strict downstream readers choked on the
+    artifact. Liberal acceptance means normalising it, not passing the
+    malformation through."""
+    p = _payload(insights="one big prose insight instead of a list")
+    out = validate_review(p)
+    assert out["insights"] == ["one big prose insight instead of a list"]

@@ -25,29 +25,33 @@ def _config(tmp_path: Path, default_engine: str = "engines.hello_world") -> Loop
 
 def test_no_override_uses_config_default_engine(tmp_path):
     cfg = _config(tmp_path, default_engine="engines.hello_world")
-    engine, environment = _load_engine_and_environment(cfg)
+    engine, environment, module = _load_engine_and_environment(cfg)
     assert engine.name == "hello-world"
+    assert module == "engines.hello_world"
 
 
 def test_override_supersedes_config_default_engine(tmp_path):
     cfg = _config(tmp_path, default_engine="engines.hello_world")
-    engine, environment = _load_engine_and_environment(cfg, engine_override="engines.git_recap")
+    engine, environment, module = _load_engine_and_environment(cfg, engine_override="engines.git_recap")
     assert engine.name == "git-recap"
+    assert module == "engines.git_recap"
 
 
 def test_short_name_override_resolves_by_convention(tmp_path):
     """`gooseloop run doc_drift` — the short name resolves to
     engines.doc_drift via the loop root's top-level package scan."""
     cfg = _config(tmp_path)  # anchor is this repo's root: engines/ exists
-    engine, environment = _load_engine_and_environment(cfg, engine_override="git_recap")
+    engine, environment, module = _load_engine_and_environment(cfg, engine_override="git_recap")
     assert engine.name == "git-recap"
+    assert module == "engines.git_recap", "lock/meta must record the RESOLVED module, not the short name"
 
 
 def test_short_default_engine_in_config_also_resolves(tmp_path):
     """default_engine itself may be a short name."""
     cfg = _config(tmp_path, default_engine="doc_drift")
-    engine, environment = _load_engine_and_environment(cfg)
+    engine, environment, module = _load_engine_and_environment(cfg)
     assert engine.name == "doc-drift"
+    assert module == "engines.doc_drift"
 
 
 def test_bad_override_fails_with_module_name_in_error(tmp_path):

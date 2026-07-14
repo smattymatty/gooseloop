@@ -12,14 +12,20 @@ Public surface:
     LooperConfig       - resolved gooseloop.toml as a value object
     RunLockHeldError   - raised when the loop root's run.lock is held
     RUN_LOCK_FILENAME  - "run.lock", the per-root lock file (PROTOCOL 13)
+    BoundaryUnavailableError - .gooseignore present, bubblewrap missing
+    GOOSEIGNORE_FILENAME - ".gooseignore", the boundary file (PROTOCOL 15)
+    boundary           - THE BOUNDARY: bwrap masking around goose spawns
+    guardrails         - egress tripwire: scan_and_redact secret-shaped output
     introspect         - env_method listing + context-source dry-run preview
+    telemetry          - phases.jsonl wide-event reader (PROTOCOL 14)
     predicates         - success_predicate factories
     protocol           - ReviewOutput / OperatorAction / RoutingEntry types
     toolkit            - stdlib-only engine helpers (Source, fetch_url, state io)
     artifact           - versioned artifact contracts for engine composition
 """
 
-from . import artifact, introspect, predicates, protocol, toolkit
+from . import artifact, boundary, guardrails, introspect, predicates, protocol, telemetry, toolkit
+from .boundary import GOOSEIGNORE_FILENAME, BoundaryUnavailableError
 from .branch_policy import BranchPolicy
 from .config import LooperConfig
 from .engine import Engine
@@ -29,10 +35,12 @@ from .phase import Context, Phase, Pipeline
 from .runlock import RUN_LOCK_FILENAME, RunLockHeldError
 
 __all__ = [
+    "BoundaryUnavailableError",
     "BranchPolicy",
     "Context",
     "Engine",
     "Environment",
+    "GOOSEIGNORE_FILENAME",
     "GooseLooper",
     "LooperConfig",
     "Phase",
@@ -40,9 +48,12 @@ __all__ = [
     "RUN_LOCK_FILENAME",
     "RunLockHeldError",
     "artifact",
+    "boundary",
+    "guardrails",
     "introspect",
     "predicates",
     "protocol",
+    "telemetry",
     "toolkit",
 ]
 

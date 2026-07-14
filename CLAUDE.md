@@ -53,7 +53,7 @@ not from submodules.
    | Engine | Read it for | Routing |
    |---|---|---|
    | `engines/hello_world/` | every contract in its simplest form | model-driven: the review's `routing[]` decides the body |
-   | `engines/git_recap/` | real I/O, `env_method` content pasting, glob-read summary | model-driven: one body phase per commit |
+   | `engines/git_recap/` | real I/O, cross-run watermark state, `skip_when` seatbelts on model routing | model-driven: review routes a daily (+ a weekly when the ISO week closed) |
    | `engines/doc_drift/` | the advanced end: deterministic body, `env_file` bundles, URL fetch, cross-run state, `post_process` | engine-driven: `pipeline()` builds the body itself; the model judges, it does not route |
 
    The first thing to settle for any new loop is where it sits on that axis. If
@@ -102,6 +102,11 @@ These are in PROTOCOL.md in full; they are the ones most easily violated:
   pointing at a real file the engine wrote (this is why doc_drift pre-assembles
   bundles). Reach for this the moment a body phase needs data specific to its
   routing entry.
+- Everything a recipe pastes into a prompt is **untrusted input** (PROTOCOL
+  §15, SECURITY.md). The framework sandboxes goose spawns (the boundary) and
+  redacts secret-shaped output (the tripwire); an engine's job is the layer in
+  between - validate inputs with a checkable shape before any model call, and
+  name project-specific secrets in the committed `.gooseignore`.
 
 ## The examples are a teaching set, not furniture
 

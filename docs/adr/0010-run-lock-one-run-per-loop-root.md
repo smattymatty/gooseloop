@@ -29,9 +29,15 @@ best-effort guess.
 3. **Every run locks — no flag exceptions.** `--no-save` and
    `--review-only` still drive goose, which can touch the working tree.
    `recipe` and `engines` are read-only and never lock.
-4. **Acquisition is `O_CREAT | O_EXCL`.** The lock body is JSON:
-   `pid`, `started` (ISO 8601 UTC), `engine` (resolved dotted module path),
-   `session_id` (null for `--no-save`).
+4. **Acquisition is atomic WITH content** — write a private temp file,
+   hard-link it into place (`link(2)` fails if the target exists: the same
+   exclusivity as `O_CREAT | O_EXCL`, but the lock is never observable
+   empty). The naive create-then-write this replaces had a real two-winner
+   race, caught by the 16-thread regression test the same day: a loser
+   could read the winner's still-empty file, judge it "corrupt", and
+   unlink a live lock. The lock body is JSON: `pid`, `started` (ISO 8601
+   UTC), `engine` (resolved dotted module path), `session_id` (null for
+   `--no-save`).
 5. **Stale locks auto-reclaim with a warning.** If `run.lock` exists but its
    pid is dead, the run is provably not in flight: replace the lock and warn
    on stderr naming the crashed session. A reused pid can only make a stale

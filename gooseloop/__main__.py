@@ -36,6 +36,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .boundary import EXIT_BOUNDARY, BoundaryUnavailableError
 from .config import LooperConfig, resolve_engine_module
 from .engine import Engine
 from .environment import Environment
@@ -99,10 +100,11 @@ def main(argv: list[str] | None = None) -> int:
 def _cmd_run(args: argparse.Namespace) -> int:
     config = LooperConfig.load()
     requested = args.engine_name or args.engine
-    engine, environment = _load_engine_and_environment(config, engine_override=requested)
+    engine, environment, module_name = _load_engine_and_environment(config, engine_override=requested)
     looper = GooseLooper(
         engine=engine,
         environment=environment,
+        engine_module=module_name,
         config=config,
         model=args.model,
         save=not args.no_save,
@@ -118,6 +120,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
         # a supervisor can tell a held lock from a failed run.
         print(f"gooseloop: {e}", file=sys.stderr)
         return EXIT_LOCKED
+    except BoundaryUnavailableError as e:
+        # Exit 4 = "boundary refused": a .gooseignore demands a sandbox
+        # bubblewrap cannot provide (PROTOCOL section 15).
+        print(f"gooseloop: {e}", file=sys.stderr)
+        return EXIT_BOUNDARY
     return 0 if result.get("review_status") != "error" else 1
 
 
@@ -171,7 +178,7 @@ def _cmd_recipe_sources(args: argparse.Namespace) -> int:
     a required source would fail the render.
     """
     config = LooperConfig.load()
-    engine, environment = _load_engine_and_environment(
+    engine, environment, _module = _load_engine_and_environment(
         config, engine_override=args.engine,
     )
     loaded = _load_merged_recipe(config, args.sources, args.overlay)
@@ -184,7 +191,8 @@ def _cmd_recipe_sources(args: argparse.Namespace) -> int:
         **engine.base_env(),
     }
     env = {**os.environ, **scope}
-    previews = preview_recipe_context(merged, env, environment=environment)
+    previews = preview_recipe_context(merged, env, environment=environment,
+                                      injected_env=engine.injected_env())
     methods = list_env_methods(environment)
     failures = [p for p in previews if not p.preview.ok and not p.optional]
 
@@ -277,8 +285,12 @@ def _load_engine_and_environment(
     config: LooperConfig,
     *,
     engine_override: str | None = None,
-) -> tuple[Engine, Environment | None]:
+) -> tuple[Engine, Environment | None, str]:
     """Resolve an engine name, import it, instantiate its `engine` attribute.
+
+    Returns (engine, environment, resolved_module_name). The resolved name
+    is what run.lock and session.meta.json record (ADR 0010) — the package
+    the operator ran, not the submodule the class happens to live in.
 
     Convention: an engine package exposes a module-level `engine`
     callable (often the class itself) and optionally an `environment`
@@ -321,7 +333,7 @@ def _load_engine_and_environment(
             raise SystemExit(
                 f"gooseloop: {module_name}.environment did not yield an Environment instance"
             )
-    return engine, environment
+    return engine, environment, module_name
 
 
 if __name__ == "__main__":

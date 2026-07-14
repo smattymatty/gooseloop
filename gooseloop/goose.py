@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 import time
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from .footer import print_call_footer, recipe_label
 from .text import Color, colored
@@ -158,12 +158,15 @@ def _countdown_sleep(seconds: int, header: str, color: str | None = None) -> Non
 
 
 def _run_goose_internal(recipe_path: str, model: str,
-                        extra_env: dict[str, str] | None = None) -> tuple[str, int]:
+                        extra_env: dict[str, str] | None = None,
+                        sandbox: list[str] | None = None) -> tuple[str, int]:
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
 
     cmd = ["goose", "run", "--recipe", recipe_path, "--model", model]
+    if sandbox:
+        cmd = sandbox + cmd
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -200,6 +203,8 @@ def run_goose_with_retry(
     base_delay: int = 5,
     success_predicate: Optional[Callable[[str], bool]] = None,
     label: str | None = None,
+    stats: Optional[dict[str, Any]] = None,
+    sandbox: list[str] | None = None,
 ) -> str:
     """Run goose with automatic retry on transient errors.
 
@@ -214,19 +219,51 @@ def run_goose_with_retry(
     rate-limit message follows the real result.
 
     Raises RuntimeError if all retries exhausted.
+
+    `stats`, when provided, is filled in place (ADR 0012 telemetry):
+    `attempts` (total goose invocations, success or not) and, on failure,
+    `last_output` — the final attempt's output, so a failed phase's
+    transcript survives for the wide event instead of evaporating with
+    the raise. `attempt_log` records EVERY attempt: outcome, returncode,
+    duration, the retry delay that followed, and — for non-final
+    attempts — the full output, so a phase that "needed three tries"
+    keeps the evidence of what the first two actually said. Additive:
+    callers that pass nothing see no change.
+
+    `sandbox`, when provided, is a command prefix (boundary.bwrap_prefix)
+    every goose attempt is spawned under — THE BOUNDARY. Retry, env
+    handling, and output streaming are identical either way.
     """
     start = time.perf_counter()
     retries_used = 0
+    attempts_made = 0
+    output = ""
     final_output: str | None = None
+    # One entry per goose invocation (§14 attempt_log): what happened,
+    # how long it took, what it said. Non-final attempts keep their full
+    # output here — the retry loop is where evidence used to evaporate.
+    attempt_log: list[dict[str, Any]] = []
 
     for attempt in range(max_retries):
-        output, returncode = _run_goose_internal(recipe_path, model, extra_env)
+        attempts_made += 1
+        attempt_t0 = time.perf_counter()
+        output, returncode = _run_goose_internal(recipe_path, model, extra_env,
+                                                 sandbox=sandbox)
+        entry: dict[str, Any] = {
+            "attempt": attempts_made,
+            "returncode": returncode,
+            "duration_s": round(time.perf_counter() - attempt_t0, 2),
+            "output": output,
+        }
+        attempt_log.append(entry)
 
         # Persistent failure shortcuts the retry loop: a provider that
         # filters tool calls or a model that can't speak goose's tool
         # protocol will not improve with another attempt. Fail fast
         # rather than burn max_retries on something structurally broken.
         if _is_persistent_failure(output):
+            entry["outcome"] = ("recipe-error" if _is_recipe_error(output)
+                                else "persistent-failure")
             if _is_recipe_error(output):
                 reason = (
                     "Recipe failed to parse; not retrying (the recipe bytes "
@@ -249,19 +286,36 @@ def run_goose_with_retry(
             success = not _is_transient_error(output, returncode)
 
         if success:
+            entry["outcome"] = "ok"
             final_output = output
             break
 
         retries_used += 1
         if _is_rate_limit(output):
+            entry["outcome"] = "rate-limited"
             delay = RATE_LIMIT_WAIT_SECONDS
             header = f"Rate limit hit  ·  attempt {attempt + 1}/{max_retries}"
             color = Color.YELLOW
         else:
+            entry["outcome"] = ("predicate-rejected" if success_predicate is not None
+                                else "transient-error")
             delay = base_delay * (attempt + 1)
             header = f"Transient error  ·  attempt {attempt + 1}/{max_retries}"
             color = Color.MAGENTA
+        entry["retry_delay_s"] = delay
         _countdown_sleep(delay, header, color=color)
+
+    if stats is not None:
+        stats["attempts"] = attempts_made
+        if final_output is None:
+            stats["last_output"] = output
+        # The FINAL attempt's output is the phase transcript the caller
+        # already persists; carrying it twice would double every event's
+        # disk cost for nothing. Earlier attempts keep theirs.
+        stats["attempt_log"] = [
+            (dict(e, output=None) if i == len(attempt_log) - 1 else e)
+            for i, e in enumerate(attempt_log)
+        ]
 
     if final_output is None:
         elapsed = time.perf_counter() - start

@@ -52,20 +52,21 @@ def environment() -> DocDriftEnvironment:
         map_path=map_path,
         state_path=state_path,
         drafts_dir=drafts_dir,
-        recaps_dir=_recaps_dir(data, cfg),
+        journal_dir=_journal_dir(data, cfg),
     )
 
 
-def _recaps_dir(data: dict, cfg: dict) -> Path:
-    """Where git-recap's per-commit summaries land, for the optional
-    "what changed and why" context.
+def _journal_dir(data: dict, cfg: dict) -> Path:
+    """Where git-recap's journal lives, for the optional "what changed and
+    why" context (daily entries for the days the canonical changed).
 
-    Prefers an explicit [doc_drift] recaps_dir; otherwise borrows
-    [git_recap] output_dir (default "recaps") so the two reference engines
-    line up with no extra config. The path is only read if it exists on disk
+    Prefers an explicit [doc_drift] journal_dir; otherwise borrows
+    [git_recap] journal_dir (default "journal") so the two reference
+    engines compose with no extra config — same loop root, same journal,
+    the artifact on disk is the pipe. The path is only read if it exists
     at bundle time, so a stale or absent dir is harmless.
     """
-    raw = cfg.get("recaps_dir") or data.get("git_recap", {}).get("output_dir", "recaps")
+    raw = cfg.get("journal_dir") or data.get("git_recap", {}).get("journal_dir", "journal")
     return Path(raw).expanduser().resolve()
 
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -76,8 +77,8 @@ class RunLock:
 
         A lock whose pid is provably dead is a crashed run, not a live
         one: reclaim it with a stderr warning instead of leaving the
-        operator a cleanup chore (ADR 0010). Two O_EXCL losses in a row
-        mean another process reclaimed the same stale lock and won —
+        operator a cleanup chore (ADR 0010). Two creation losses in a row
+        mean another contender reclaimed the same stale lock and won —
         its lock is live by construction, so refuse.
         """
         payload = {
@@ -86,18 +87,41 @@ class RunLock:
             "engine": engine,
             "session_id": session_id,
         }
+        body = json.dumps(payload, indent=2) + "\n"
         for _ in range(2):
-            try:
-                fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
-            except FileExistsError:
-                self._reclaim_if_stale()  # raises RunLockHeldError if live
-                continue
-            with os.fdopen(fd, "w") as f:
-                f.write(json.dumps(payload, indent=2) + "\n")
-            self._held = True
-            self._payload = payload
-            return
+            if self._try_create(body):
+                self._held = True
+                self._payload = payload
+                return
+            self._reclaim_if_stale()  # raises RunLockHeldError if live
         raise RunLockHeldError(self.path, self._read() or {})
+
+    def _try_create(self, body: str) -> bool:
+        """Materialise the lock atomically WITH its content: write a
+        private temp file, then hard-link it into place. link(2) fails if
+        the target exists (the same exclusivity as O_CREAT|O_EXCL), and
+        the lock is never observable empty or half-written.
+
+        The naive create-then-write it replaces had a real race, caught by
+        the 16-thread test: a contender losing the O_EXCL could read the
+        winner's still-empty file, judge it "corrupt", and unlink a LIVE
+        lock — two winners. Atomic-with-content closes that whole class.
+        """
+        tmp = self.path.with_name(
+            f".{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        try:
+            tmp.write_text(body)
+            try:
+                os.link(tmp, self.path)
+                return True
+            except FileExistsError:
+                return False
+        finally:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
 
     def annotate(self, *, session_id: str) -> None:
         """Record the session id once the session folder exists. Rewriting

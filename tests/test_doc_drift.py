@@ -387,7 +387,7 @@ def _sha(repo: Path, rel: str) -> str:
     return out.stdout.strip()
 
 
-def _recap_env(tmp_path, repo, recaps_dir):
+def _journal_env(tmp_path, repo, journal_dir):
     return DocDriftEnvironment(
         map_path=_write(
             tmp_path / "doc-map.toml",
@@ -395,46 +395,53 @@ def _recap_env(tmp_path, repo, recaps_dir):
         ),
         state_path=tmp_path / "state.json",
         drafts_dir=tmp_path / "drafts",
-        recaps_dir=recaps_dir,
+        journal_dir=journal_dir,
     )
 
 
-def test_bundle_includes_recap_when_present(tmp_path):
+def test_recent_journal_pastes_last_dailies_and_weeklies(tmp_path):
+    """The declared composition (env_method:recent_journal on the draft
+    recipe): last 5 dailies + last 2 weeklies, oldest first — visible as
+    a wiring chip, deterministic, operator-removable."""
     repo = _make_repo(tmp_path / "r")
     _commit(repo, "doc.md", "old", "2026-01-01T00:00:00")
     _commit(repo, "src.py", "PRICE=9", "2026-02-01T00:00:00")
-    sha = _sha(repo, "src.py")
-    recaps = tmp_path / "recaps"; recaps.mkdir()
-    (recaps / f"20260201-000000-bump-price-{sha[:8]}.md").write_text("RECAP: bumped the price to 9")
-    (recaps / "weekly").mkdir()
-    (recaps / "weekly" / "weekly-2026-02-01.md").write_text("weekly rollup, no sha")
-    text = _recap_env(tmp_path, repo, recaps).write_context_bundle(_recap_env(tmp_path, repo, recaps).row_for("a")).read_text()
-    assert "WHAT CHANGED IN THE CANONICAL" in text
-    assert "RECAP: bumped the price to 9" in text
-    assert "weekly rollup" not in text  # weekly/ rollups have no sha, skipped
+    journal = tmp_path / "journal"
+    (journal / "daily").mkdir(parents=True)
+    (journal / "weekly").mkdir(parents=True)
+    for i in range(1, 8):  # 7 dailies; only the last 5 must paste
+        (journal / "daily" / f"2026-02-0{i}.md").write_text(f"DAY {i}")
+    (journal / "weekly" / "2026-W04.md").write_text("WEEK 4")
+    (journal / "weekly" / "2026-W05.md").write_text("WEEK 5")
+    (journal / "weekly" / "2026-W03.md").write_text("WEEK 3")
+    out = _journal_env(tmp_path, repo, journal).recent_journal()
+    assert "DAY 3" in out and "DAY 7" in out
+    assert "DAY 1" not in out and "DAY 2" not in out  # only the last 5
+    assert "WEEK 4" in out and "WEEK 5" in out
+    assert "WEEK 3" not in out  # only the last 2 weeklies
 
 
-def test_bundle_omits_recap_when_dir_absent(tmp_path):
+def test_recent_journal_placeholder_when_absent(tmp_path):
     repo = _make_repo(tmp_path / "r")
     _commit(repo, "doc.md", "old", "2026-01-01T00:00:00")
     _commit(repo, "src.py", "PRICE=9", "2026-02-01T00:00:00")
-    text = _recap_env(tmp_path, repo, tmp_path / "nope").write_context_bundle(
-        _recap_env(tmp_path, repo, tmp_path / "nope").row_for("a")
-    ).read_text()
+    out = _journal_env(tmp_path, repo, tmp_path / "nope").recent_journal()
+    assert "no journal" in out  # a render never fails on a missing journal
+
+
+def test_bundle_no_longer_embeds_journal(tmp_path):
+    """The buried bundle section is gone on purpose: the journal enters as
+    a DECLARED context source, not code nobody can see in the wiring."""
+    repo = _make_repo(tmp_path / "r")
+    _commit(repo, "doc.md", "old", "2026-01-01T00:00:00")
+    _commit(repo, "src.py", "PRICE=9", "2026-02-01T00:00:00")
+    journal = tmp_path / "journal"
+    (journal / "daily").mkdir(parents=True)
+    (journal / "daily" / "2026-02-01.md").write_text("JOURNAL ENTRY")
+    env = _journal_env(tmp_path, repo, journal)
+    text = env.write_context_bundle(env.row_for("a")).read_text()
     assert "WHAT CHANGED IN THE CANONICAL" not in text
-
-
-def test_bundle_omits_recap_when_no_match(tmp_path):
-    repo = _make_repo(tmp_path / "r")
-    _commit(repo, "doc.md", "old", "2026-01-01T00:00:00")
-    _commit(repo, "src.py", "PRICE=9", "2026-02-01T00:00:00")
-    recaps = tmp_path / "recaps"; recaps.mkdir()
-    (recaps / "20260201-000000-unrelated-deadbeef.md").write_text("RECAP: a different commit")
-    text = _recap_env(tmp_path, repo, recaps).write_context_bundle(
-        _recap_env(tmp_path, repo, recaps).row_for("a")
-    ).read_text()
-    assert "WHAT CHANGED IN THE CANONICAL" not in text
-    assert "a different commit" not in text
+    assert "JOURNAL ENTRY" not in text
 
 
 # ---- state -------------------------------------------------------
@@ -586,3 +593,63 @@ def test_safe_filename():
 def test_env_vars_shape(tmp_path):
     env = _env(tmp_path, '[[pair]]\nid="a"\ncanonical="s"\nderived="d"\n')
     assert set(env.env_vars()) >= {"MAP_PATH", "STATE_PATH", "DRAFTS_DIR", "DRIFT_DATE"}
+
+
+def test_injected_env_declaration_matches_what_phases_actually_get(tmp_path):
+    """Verify, don't trust (the ADR 0011 stance, applied to the new
+    Engine.injected_env declaration): every var doc_drift DECLARES as
+    phase-injected must actually appear in the env its built body phases
+    receive. A declaration that drifts from the build_env closure would
+    make the dashboard's 'injected per phase' chip a lie."""
+    from engines.doc_drift import DocDriftEngine
+    from gooseloop.phase import Context
+
+    repo = _make_repo(tmp_path / "r")
+    _commit(repo, "doc.md", "old", "2026-01-01T00:00:00")
+    _commit(repo, "src.py", "PRICE=9", "2026-02-01T00:00:00")
+    env = _file_pair_env(tmp_path, repo)
+    engine = DocDriftEngine()
+    ctx = Context(model="m", session_dir=None, base_env={}, environment=env)
+
+    pipeline = engine.pipeline(ctx)
+    assert pipeline.body, "fixture must produce at least one draft phase"
+    declared = set(engine.injected_env())
+    assert declared, "doc_drift must declare its injected vars"
+    for phase in pipeline.body:
+        built = set(phase.build_env(ctx))
+        missing = declared - built
+        assert not missing, f"declared-but-never-injected: {missing}"
+
+
+def test_draft_phase_raises_seal_action_the_moment_it_lands(tmp_path):
+    """Caught live 2026-07-13: summary-time raising meant a drift=yes
+    draft was invisible mid-run and a crashed pass lost its decisions.
+    The draft phase's post now raises immediately; ctx dedup keeps the
+    summary's re-raise from doubling the ledger."""
+    from engines.doc_drift.engine import _record_and_raise
+    from gooseloop.phase import Context
+
+    repo = _make_repo(tmp_path / "r")
+    _commit(repo, "doc.md", "old", "2026-01-01T00:00:00")
+    _commit(repo, "src.py", "PRICE=9", "2026-02-01T00:00:00")
+    env = _file_pair_env(tmp_path, repo)
+    row = env.row_for("a")
+    ctx = Context(model="m", session_dir=None, base_env={}, environment=env)
+
+    draft = tmp_path / "drafts" / "a.patch.md"
+    draft.parent.mkdir(parents=True, exist_ok=True)
+    draft.write_text("<!-- doc-drift: drift=yes -->\n# Drift patch: a\n")
+    _record_and_raise(ctx, row, draft)
+    actions = ctx.artifacts.get("operator_actions", [])
+    assert len(actions) == 1
+    assert "seal the doc-drift draft for a" in actions[0]["action"]
+
+    # Raising twice (phase + summary belt-and-suspenders) stays single.
+    _record_and_raise(ctx, row, draft)
+    assert len(ctx.artifacts.get("operator_actions", [])) == 1
+
+    # drift=none never raises.
+    draft.write_text("<!-- doc-drift: drift=none -->\n# In sync: a\n")
+    ctx2 = Context(model="m", session_dir=None, base_env={}, environment=env)
+    _record_and_raise(ctx2, row, draft)
+    assert ctx2.artifacts.get("operator_actions", []) == []

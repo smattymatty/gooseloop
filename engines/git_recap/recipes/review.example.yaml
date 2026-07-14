@@ -1,62 +1,45 @@
 version: "1.0.0"
 title: "git-recap review"
-description: "Read the commit log; emit one summarize-commit routing entry per commit worth recapping, and hasn't already been recapped."
+description: "Read the journal status; route today's daily and, when due, the closed week's weekly."
 
 context:
-  - label: "COMMITS IN WINDOW"
-    source: env_method:commit_log
+  - label: "JOURNAL STATUS"
+    source: env_method:journal_status
 
 prompt: |
-  You are the review phase of the git-recap engine.
+  You are the review phase of the git-recap journal engine. The JOURNAL
+  STATUS table above is computed deterministically by the engine: fresh
+  commit counts per repo, whether today's entry already exists, and
+  whether the closed week's weekly review is due.
 
-  The COMMITS IN WINDOW block above is a list of every commit by ${AUTHOR}
-  in the last ${WINDOW_DAYS} days across the operator's configured repos.
-  Format per row:
+  Route the work. Do not write any journal content here.
 
-      <short-sha>  <YYYY-MM-DD>  <subject>
+  Rules:
+  - If TOTAL fresh is greater than 0, emit one routing entry:
+      { "recipe": "daily", "params": { "date": "${TODAY}" }, "reason": "..." }
+    (If today's entry already exists, route it anyway — the daily phase
+    amends the existing entry with the new commits.)
+  - If the status says "weekly due: True", also emit:
+      { "recipe": "weekly", "params": { "week": "${CLOSED_WEEK}" }, "reason": "..." }
+  - If TOTAL fresh is 0 and no weekly is due, emit an empty routing list.
 
-  Your job: emit one routing[] entry per commit you think is worth a
-  recap summary. Skip merge commits, trivial bumps (whitespace, version
-  numbers, lockfile churn), and commits whose subject already tells the
-  whole story. Prefer commits that ship a feature, a non-trivial fix,
-  a refactor with meaningful scope, or a doc change with real content.
+  Use the exact date ${TODAY} and week ${CLOSED_WEEK} shown — the engine
+  verifies both and skips anything mislabeled.
 
-  Each routing entry MUST include:
-
-      { "recipe": "summarize-commit",
-        "params": {
-          "repo":    "<absolute path of the repo, from the block header>",
-          "sha":     "<short-sha from the row>",
-          "subject": "<the commit subject line, verbatim from the row>"
-        },
-        "reason": "<one-line operator-facing reason this commit is worth a recap>" }
-
-  The `subject` is used to build a human-readable filename for the recap.
-  Copy it verbatim from the commit row; do not rephrase or summarise it.
-
-  Also surface operator_actions[] for anything the recap can't itself
-  produce — e.g. "draft release notes for these features", "consider
-  tagging v0.4.0". Each entry MUST be:
-
-      { "action": "<what the operator should do>",
-        "why":    "<why it matters — the consequence of doing it or the
-                    risk of not — never leave this empty>" }
-
-  The `why` is half the point of flagging an action; an action with no
-  stated why is not worth surfacing. If you can't articulate a why,
-  drop the action instead of emitting an empty one.
+  In `summary`, state plainly what you routed and why, for the operator.
+  In `insights`, note anything the status table shows that deserves a
+  human eye (a repo quiet for many days, an overdue weekly). Raise
+  `operator_actions` only for real decisions a human must make.
 
   Output your reply ending with a JSON object wrapped in:
 
-      <<<DELIVERABLE_JSON>>>
-      { ... }
-      <<<END_DELIVERABLE>>>
-
-  Required keys: protocol_version, status, summary, insights, routing,
-  operator_actions.
-
-settings:
-  goose_provider: "openrouter"
-  goose_model: "anthropic/claude-haiku-4-5"
-
-extensions: []
+  <<<DELIVERABLE_JSON>>>
+  {
+    "protocol_version": "1.0",
+    "status": "done",
+    "summary": "...",
+    "insights": ["..."],
+    "routing": [ ... ],
+    "operator_actions": []
+  }
+  <<<END_DELIVERABLE>>>

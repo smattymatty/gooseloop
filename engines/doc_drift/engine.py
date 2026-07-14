@@ -344,17 +344,20 @@ class DocDriftEnvironment(Environment):
         map_path: Path,
         state_path: Path,
         drafts_dir: Path,
-        recaps_dir: Optional[Path] = None,
+        journal_dir: Optional[Path] = None,
     ) -> None:
         self.map_path = map_path
         self.state_path = state_path
         self.drafts_dir = drafts_dir
-        # Optional: git-recap's per-commit summary folder. If it exists on disk,
-        # the bundle gets a "what changed in the canonical and why" section built
-        # from the recaps for the commits that touched the canonical since the
-        # derived last followed. If it doesn't exist (or git-recap never ran),
-        # the feature is silently off and the bundle is exactly as before.
-        self.recaps_dir = recaps_dir
+        # Optional: git-recap's journal folder (daily/ entries inside). If
+        # it exists on disk, the bundle gets a "what changed in the canonical
+        # and why" section built from the DAILY entries for the days the
+        # canonical changed since the derived last followed — the implicit
+        # composition between the two reference engines (PROTOCOL §12: the
+        # artifact on disk is the pipe). If it doesn't exist (or git-recap
+        # never ran), the feature is silently off and the bundle is exactly
+        # as before.
+        self.journal_dir = journal_dir
         self._mapspec: Optional[MapSpec] = None
         self._pairs: Optional[list[Pair]] = None
         self._state: Optional[dict] = None
@@ -547,10 +550,6 @@ class DocDriftEnvironment(Environment):
         parts.append("")
         parts.append("== RELATIONSHIP NOTE (what 'in sync' means for this pair) ==")
         parts.append(row.pair.note or "(none provided)")
-        recap = self._recap_section(row)
-        if recap:
-            parts.append("")
-            parts.append(recap)
         path = self._bundle_path(row.pair.id)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("\n".join(parts), encoding="utf-8")
@@ -562,48 +561,33 @@ class DocDriftEnvironment(Environment):
     def draft_path(self, pair_id: str) -> Path:
         return self.drafts_dir / f"{_safe_filename(pair_id)}.patch.md"
 
-    # ---- optional: what-changed context from git-recap -----------
+    # ---- optional: recent journal from git-recap (env_method) -----
 
-    def _recap_section(self, row: TriageRow) -> str:
-        """A "what changed in the canonical, and why" block, or "".
+    def recent_journal(self) -> str:
+        """The operator's recent git-recap journal: the last 5 dailies and
+        the last 2 weeklies, oldest first, each capped.
 
-        Nice-if-it-exists: returns "" (no section at all) when there's no
-        recaps dir on disk, no temporal anchor on the derived side, no
-        file canonical, or no recap that matches a commit in range. The
-        bundle is then exactly what it was before this feature existed.
-
-        When recaps ARE on disk, it pastes the git-recap summaries for the
-        commits that touched the canonical AFTER the derived view last moved,
-        so the body can focus its patch on the real change instead of
-        re-diffing two whole documents in its head.
-        """
-        if self.recaps_dir is None or not self.recaps_dir.is_dir():
-            return ""
-        if row.deriv.ts is None:
-            return ""  # no "since when" to bound the canonical's changes
-        index = _index_recaps(self.recaps_dir)
-        if not index:
-            return ""
-        seen: set[Path] = set()
+        A DECLARED context source (`env_method:recent_journal` on the
+        draft recipe), not code buried in bundle assembly — the operator
+        sees the chip in the wiring panel, can preview it, and can remove
+        it (grill follow-up, 2026-07-13: legibility beat the cleverer
+        date-matched pasting that nobody could see). Deterministic: reads
+        files, calls no model. Returns a placeholder when no journal
+        exists, so the source never fails a render."""
+        if self.journal_dir is None:
+            return "(no journal configured)"
         blocks: list[str] = []
-        for src in row.pair.canonical:
-            if src.is_url:
-                continue
-            for sha in _commits_touching(Path(src.value), row.deriv.ts):
-                recap = _recap_for_sha(sha, index)
-                if recap is not None and recap not in seen:
-                    seen.add(recap)
-                    blocks.append(f"--- {recap.name} ---\n{_read_capped(recap)}")
+        weekly_dir = self.journal_dir / "weekly"
+        if weekly_dir.is_dir():
+            for p in sorted(weekly_dir.glob("*.md"))[-2:]:
+                blocks.append(f"--- weekly {p.stem} ---\n{cap(p.read_text())}")
+        daily_dir = self.journal_dir / "daily"
+        if daily_dir.is_dir():
+            for p in sorted(daily_dir.glob("*.md"))[-5:]:
+                blocks.append(f"--- daily {p.stem} ---\n{cap(p.read_text())}")
         if not blocks:
-            return ""
-        header = (
-            "== WHAT CHANGED IN THE CANONICAL SINCE THE DERIVED LAST FOLLOWED ==\n"
-            "(Operator commit recaps for the canonical changes that landed after\n"
-            "the derived view last moved. Use them to focus the patch on what\n"
-            "actually changed and why; they do not override the canonical text\n"
-            "above, which is still the source of truth.)"
-        )
-        return "\n".join([header, ""] + blocks)
+            return "(no journal entries yet — run git_recap to start one)"
+        return cap("\n\n".join(blocks))
 
     # ---- state: the cross-run memory -----------------------------
 
@@ -735,54 +719,6 @@ def _read_capped(path: Path) -> str:
 # git-recap names per-commit files <stamp>-<slug>-<sha8>.md; the trailing
 # hex run is a commit-sha prefix. The weekly/ rollups carry no sha and are
 # skipped (top-level glob only). 7-40 hex tolerates 7- or 8-char prefixes.
-_RECAP_SHA_RE = re.compile(r"-([0-9a-f]{7,40})$", re.IGNORECASE)
-
-
-def _index_recaps(recaps_dir: Path) -> dict[str, Path]:
-    """Map sha-prefix token -> recap file for git-recap's per-commit summaries.
-
-    Returns {} if the dir is absent. Scans only the top level, so weekly
-    rollups under weekly/ (which have no sha) are ignored.
-    """
-    if not recaps_dir.is_dir():
-        return {}
-    out: dict[str, Path] = {}
-    for p in sorted(recaps_dir.glob("*.md")):
-        m = _RECAP_SHA_RE.search(p.stem)
-        if m:
-            out[m.group(1).lower()] = p
-    return out
-
-
-def _recap_for_sha(sha: str, index: dict[str, Path]) -> Optional[Path]:
-    """The recap file whose sha-prefix token leads `sha`, or None."""
-    sha = sha.lower()
-    for token, path in index.items():
-        if sha.startswith(token):
-            return path
-    return None
-
-
-def _commits_touching(path: Path, since_unix: int) -> list[str]:
-    """Full SHAs of commits that touched `path` after `since_unix`.
-
-    Empty if the path isn't readable, isn't git-tracked, or nothing landed.
-    The bound is the derived view's own commit time, so this is exactly the
-    canonical's drift delta. Never raises: a non-repo path just yields [].
-    """
-    if not path.exists():
-        return []
-    since_iso = datetime.fromtimestamp(since_unix, timezone.utc).isoformat()
-    cmd = [
-        "git", "-C", str(path.parent), "log",
-        f"--since={since_iso}", "--format=%H", "--", str(path),
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    if proc.returncode != 0:
-        return []
-    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
-
-
 _DRIFT_NONE_RE = re.compile(r"drift\s*=\s*none", re.IGNORECASE)
 
 
@@ -813,6 +749,13 @@ class DocDriftEngine(Engine):
     @property
     def name(self) -> str:
         return "doc-drift"
+
+    def injected_env(self) -> dict[str, str]:
+        return {
+            "CONTEXT_FILE": "path to the per-pair bundle (canonical + "
+                            "derived + relationship note) the engine "
+                            "writes before each draft phase",
+        }
 
     def recipes_dir(self) -> str:
         return str(_HERE / "recipes")
@@ -859,7 +802,13 @@ class DocDriftEngine(Engine):
                     recipe_path=str(recipes / "draft-doc-patch.yaml"),
                     build_env=(lambda _c, e=build_env: dict(e)),
                     success_predicate=predicates.file_nonempty(draft),
-                    post_process=(lambda _o, c, p=draft: c.record_output(p)),
+                    # Raise the seal decision the moment the draft lands
+                    # (caught live 2026-07-13: summary-time raising meant
+                    # mid-run drafts were invisible and a crashed pass
+                    # lost its decisions entirely). The summary re-raises
+                    # for belt-and-suspenders; ctx dedups by (action, why).
+                    post_process=(lambda _o, c, r=row, p=draft:
+                                  _record_and_raise(c, r, p)),
                     label=f"draft:{row.pair.id}",
                 ))
         return Pipeline(
@@ -870,6 +819,20 @@ class DocDriftEngine(Engine):
                 recipe_path=str(recipes / "summary.example.yaml"),
                 post_process=_persist_state,
             ),
+        )
+
+
+def _record_and_raise(ctx: Context, row: TriageRow, draft: Path) -> None:
+    """Body-phase post: record the output and, when the draft's first-line
+    marker says drift=yes, raise the seal decision immediately — same
+    strings as the summary's raise so ctx dedup keeps the ledger single."""
+    ctx.record_output(draft)
+    if _draft_outcome(draft) == "drafted":
+        note = f" {row.pair.note}" if row.pair.note else ""
+        ctx.add_operator_action(
+            f"Review and seal the doc-drift draft for {row.pair.id}",
+            why=(f"the derived view drifted from its canonical; a patch draft "
+                 f"is waiting at {draft}.{note}"),
         )
 
 

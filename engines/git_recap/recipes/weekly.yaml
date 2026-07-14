@@ -1,0 +1,34 @@
+version: "1.0.0"
+title: "git-recap weekly"
+description: "Review the closed ISO week from its daily entries."
+
+context:
+  - label: "THE WEEK'S DAILIES (oldest first)"
+    source: env_method:closed_week_dailies
+  - label: "PREVIOUS WEEKLY REVIEW"
+    source: env_method:last_weekly
+
+prompt: |
+  Write the weekly review for ${WEEK} to ${OUTPUT_PATH}.
+
+  Your material is THE WEEK'S DAILIES — synthesize them; do not invent
+  anything they don't contain. The PREVIOUS WEEKLY REVIEW is the arc:
+  what carried over, what finally landed, what stalled.
+
+  A weekly is not seven dailies stapled together. It answers:
+  - What actually shipped this week (empirical: name the artifacts).
+  - What moved but didn't land (and where it sits now).
+  - The through-lines: arcs that span days or projects.
+  - What the dailies show was abandoned or reversed (say so plainly).
+
+  Shape:
+
+  # ${WEEK}
+  ## Shipped
+  ## In motion
+  ## Threads
+  ## Honest notes
+
+  If the week has only a few dailies, review the week that WAS — never
+  pad. Write the complete markdown to ${OUTPUT_PATH} using your file
+  tools.

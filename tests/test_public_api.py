@@ -19,10 +19,12 @@ import gooseloop
 # The v0.x public surface. Additions extend this set; removals are a
 # breaking change.
 PUBLIC_SURFACE = {
+    "BoundaryUnavailableError",
     "BranchPolicy",
     "Context",
     "Engine",
     "Environment",
+    "GOOSEIGNORE_FILENAME",
     "GooseLooper",
     "LooperConfig",
     "Phase",
@@ -30,9 +32,12 @@ PUBLIC_SURFACE = {
     "RUN_LOCK_FILENAME",
     "RunLockHeldError",
     "artifact",
+    "boundary",
+    "guardrails",
     "introspect",
     "predicates",
     "protocol",
+    "telemetry",
     "toolkit",
 }
 

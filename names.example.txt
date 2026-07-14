@@ -1,0 +1,5 @@
+# hello-world's guest list: one name per line.
+# Copy me:  cp names.example.txt names.txt   (names.txt is gitignored — put anyone you like in yours)
+Canada
+Zimbabwe
+Canadian Zimbabwean

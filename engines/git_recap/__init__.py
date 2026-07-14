@@ -1,8 +1,9 @@
-"""git-recap reference engine.
+"""git-recap reference engine — a work journal across your repos.
 
-Walks a set of configured git repos, finds your commits in a recent
-window, summarises each via the body recipe, and renders a changelog
-summary at the end.
+One combined daily entry per date (sectioned by project), plus a weekly
+review when an ISO week closes. Model-routed with deterministic
+skip_when seatbelts; per-repo commit watermarks make every daily cover
+exactly the commits no daily has covered.
 
 Exposed at module level for the gooseloop CLI:
     engine         - GitRecapEngine factory.
@@ -13,12 +14,12 @@ Configuration (in gooseloop.toml):
 
     [git_recap]
     repos = ["/path/to/repo1", "/path/to/repo2"]
-    window_days = 7              # how far back to look
-    max_commits = 50             # total budget, split evenly across repos (0 = no cap)
-    author = "auto"              # "auto" => git config user.email of first repo
-    output_dir = "recaps"        # body recipes write summaries here
+    author = "auto"                       # "auto" => git config user.email of first repo
+    journal_dir = "journal"               # daily/ and weekly/ land under here
+    state = "git-recap.state.json"        # per-repo watermarks (machine-written)
+    first_run_days = 7                    # window for a repo's very first daily
 
-Missing or malformed config trips the engine's precheck and prints an
+Missing or malformed config trips the engine's precheck with an
 operator-actionable error before the run starts. The engine never
 silently degrades.
 """
@@ -32,9 +33,8 @@ from .engine import GitRecapEngine, GitRecapEnvironment
 def _load_git_recap_config() -> dict:
     """Read the [git_recap] section from cwd's gooseloop.toml.
 
-    Returns an empty dict if no toml or no section is present. The
-    engine's precheck turns that into a friendly error instead of
-    failing partway through the pipeline.
+    Returns an empty dict if no toml or no section is present; precheck
+    turns that into a friendly error instead of failing mid-pipeline.
     """
     path = Path.cwd() / "gooseloop.toml"
     if not path.exists():
@@ -46,22 +46,17 @@ def _load_git_recap_config() -> dict:
 
 def environment() -> GitRecapEnvironment:
     cfg = _load_git_recap_config()
-    repos = [Path(p).expanduser().resolve() for p in cfg.get("repos", [])]
-    window_days = int(cfg.get("window_days", 7))
-    max_commits = int(cfg.get("max_commits", 50))
-    author = str(cfg.get("author", "auto"))
-    output_dir = Path(cfg.get("output_dir", "recaps")).expanduser().resolve()
     return GitRecapEnvironment(
-        repos=repos,
-        window_days=window_days,
-        author=author,
-        output_dir=output_dir,
-        max_commits=max_commits,
+        repos=[Path(p).expanduser().resolve() for p in cfg.get("repos", [])],
+        author=str(cfg.get("author", "auto")),
+        journal_dir=Path(cfg.get("journal_dir", "journal")).expanduser().resolve(),
+        state_path=Path(cfg.get("state", "git-recap.state.json")).expanduser().resolve(),
+        first_run_days=int(cfg.get("first_run_days", 7)),
     )
 
 
 def engine() -> GitRecapEngine:
-    return GitRecapEngine(output_dir=environment().output_dir)
+    return GitRecapEngine(env=environment())
 
 
 __all__ = ["GitRecapEngine", "GitRecapEnvironment", "engine", "environment"]

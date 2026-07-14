@@ -1,0 +1,46 @@
+version: "1.0.0"
+title: "git-recap daily"
+description: "Write (or amend) one combined journal entry for the day, across every configured project."
+
+context:
+  - label: "PREVIOUS DAILIES (oldest first)"
+    source: env_method:recent_dailies
+  - label: "LAST WEEKLY REVIEW"
+    source: env_method:last_weekly
+  - label: "TODAY'S EXISTING ENTRY"
+    source: env_method:todays_entry
+  - label: "FRESH COMMITS (since each repo's watermark, with file stats)"
+    source: env_method:fresh_commits
+
+prompt: |
+  Write today's journal entry (${DATE}) to ${OUTPUT_PATH}.
+
+  This is ONE combined entry for the whole day, covering every project,
+  with a `## <project>` section per repo that has fresh commits. Skip
+  repos with none.
+
+  Ground rules — this journal is empirical, not promotional:
+  - Every claim names its evidence: files, modules, commit subjects.
+    "Added run.lock acquisition in gooseloop/runlock.py (ADR 0010)" —
+    never "made great progress on locking".
+  - Do NOT repeat what the PREVIOUS DAILIES already told. They are your
+    memory: if a feature appeared there, today's entry describes what
+    CHANGED about it — "polished further", "finally shipped", "reverted".
+    Name the arc when it exists.
+  - The LAST WEEKLY REVIEW gives the bigger arc; use it the same way.
+  - If TODAY'S EXISTING ENTRY is present, this is an amend run: rewrite
+    the file as ONE coherent entry covering the old material AND the
+    fresh commits. Never append a "part 2"; never drop what was there.
+
+  Shape:
+
+  # ${DATE}
+  ## <project>
+  - <what changed, file-level, with the why when the commits show it>
+  ## <project>
+  ...
+  (optional) ## Threads
+  - <cross-project arcs worth one line: "dash consumed the lock the core shipped">
+
+  Write the complete markdown entry to ${OUTPUT_PATH} using your file
+  tools. Keep it tight — a day is a page, not a report.

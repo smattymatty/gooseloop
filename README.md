@@ -76,7 +76,7 @@ where `engines/` is importable) and select one with `-e <module>`:
 | Engine | What it does | Run (from the repo root) |
 |--------|--------------|--------------------------|
 | `hello_world` | The minimal reference engine (the tour above). | `python3 -m gooseloop run -e engines.hello_world` |
-| `git_recap` | Summarises your recent commits across configured repos into a changelog. Configure `[git_recap]` in `gooseloop.toml`. | `python3 -m gooseloop run -e engines.git_recap` |
+| `git_recap` | Keeps a work journal across configured repos: one combined daily entry per date (commits since each repo's watermark), plus a weekly review when an ISO week closes. Configure `[git_recap]` in `gooseloop.toml`. | `python3 -m gooseloop run git_recap` |
 | `doc_drift` | Finds derived docs/pages that fell behind their canonical source and drafts a patch to seal. Configure `[doc_drift]`, then `cp doc-map.example.toml doc-map.toml` and edit. | `python3 -m gooseloop run -e engines.doc_drift` |
 
 Engines can also be run by short name — `python3 -m gooseloop run doc_drift`

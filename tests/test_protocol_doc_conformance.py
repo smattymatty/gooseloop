@@ -64,7 +64,9 @@ def test_schema_block_status_enum_matches_the_code_enum(schema_example):
 
 def test_schema_block_routing_entry_shape(schema_example):
     (entry,) = schema_example["routing"]
-    assert set(entry) == {"recipe", "params", "reason"}
+    assert set(entry) == {"recipe", "params", "reason", "routed_by"}
+    # The doc writes the provenance enum inline, like status.
+    assert [s.strip() for s in entry["routed_by"].split("|")] == ["model", "engine"]
 
 
 def test_schema_block_operator_action_requires_action_and_why(schema_example):
@@ -103,7 +105,10 @@ def test_documented_framing_round_trips_through_extract_and_validate():
     assert extracted is not None and extracted.is_canonical
     validated = validate_review(extracted.payload)
     assert validated["status"] == "done"
-    assert validated["routing"] == review["routing"]
+    # Validation stamps provenance on model-emitted entries (ADR 0013).
+    assert validated["routing"] == [
+        {**entry, "routed_by": "model"} for entry in review["routing"]
+    ]
     assert validated["operator_actions"] == review["operator_actions"]
 
 

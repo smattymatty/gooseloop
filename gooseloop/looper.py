@@ -23,9 +23,11 @@ import re
 import sys
 import time
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from .boundary import bwrap_prefix, persist_masks, resolve_sandbox
 from .branch_policy import BranchPolicy
 from .config import LooperConfig
 from .context_prepend import prepared_recipe
@@ -44,8 +46,10 @@ from .protocol import (
     validate_review,
 )
 from .recipe_merge import load_layered_recipe
+from . import telemetry
+from .guardrails import scan_and_redact
 from .runlock import RunLock
-from .session import log_step, new_session
+from .session import log_step, new_session, record_base_env
 from .extract import extract_json_with_provenance
 from .text import Color, banner, colored
 
@@ -100,6 +104,21 @@ class GooseLooper:
         self.review_only = review_only
         self.review_overlays = review_overlays or []
         self.summary_overlays = summary_overlays or []
+        # Telemetry side-channel, refreshed by every _invoke_recipe call
+        # (ADR 0012): the env injected for the current phase, goose retry
+        # stats, and the failure message when the invocation raised.
+        self._event_seq = 0
+        self._invoke_env: dict[str, str] = {}
+        self._invoke_stats: dict[str, Any] = {}
+        self._invoke_error: Optional[str] = None
+        # The rendered recipe the CURRENT invocation handed to goose —
+        # context blocks filled, env substituted. Captured before the
+        # temp file evaporates, so every event keeps what the model SAW,
+        # not just what it said (the input half of PROTOCOL section 14).
+        self._invoke_prompt: Optional[str] = None
+        # THE BOUNDARY (PROTOCOL section 15): bwrap prefix every goose
+        # spawn runs under, resolved once per pass. None = unsandboxed.
+        self._sandbox: Optional[list[str]] = None
 
     # ------------------------------------------------------------------
     # public entry
@@ -128,11 +147,35 @@ class GooseLooper:
         actions_ran = 0
         actions_skipped = 0
 
+        # THE BOUNDARY resolves before any session artifact exists: a
+        # refusal (BoundaryUnavailableError) must leave nothing behind.
+        boundary = resolve_sandbox(self.config.anchor)
+        self._sandbox = boundary.prefix if boundary else None
+
         session_dir = (new_session(self.config.sessions_dir, self.model, self.engine.name,
                                    engine_module=self._engine_module())
                        if self.save else None)
         if session_dir:
             lock.annotate(session_id=session_dir.name)
+        self._event_seq = 0
+
+        if boundary:
+            print(colored(
+                f"  boundary: {len(boundary.masks)} paths masked (bwrap)",
+                Color.CYAN,
+            ))
+        if session_dir:
+            log_step(session_dir,
+                     f"boundary: {len(boundary.masks)} paths masked (bwrap)"
+                     if boundary else
+                     "boundary: none (bubblewrap unavailable)")
+            # The session keeps the mask MAP (patterns + exact paths), so
+            # boundary anomalies diff across runs — and the map itself is
+            # masked: a list of where secrets live is denied to the goose
+            # the same as what it maps (PROTOCOL section 15).
+            artifact = persist_masks(session_dir, boundary)
+            if boundary and artifact is not None:
+                self._sandbox = bwrap_prefix(boundary.masks + [artifact])
 
         env_paths = self.environment.env_vars() if self.environment else {}
         ctx = Context(
@@ -141,6 +184,11 @@ class GooseLooper:
             base_env={**env_paths, **self.engine.base_env()},
             environment=self.environment,
         )
+        if session_dir:
+            # The session-constant half of the telemetry dimensionality
+            # lives here once; per-phase events record only what varies
+            # (ADR 0012).
+            record_base_env(session_dir, ctx.base_env)
 
         if self.validate:
             banner(f"{self.engine.name}: precheck", Color.CYAN)
@@ -171,7 +219,7 @@ class GooseLooper:
 
         try:
             review_calls, review_ok, review_status, review_output = self._run_review(
-                pipeline.review, ctx, body_queue,
+                pipeline.review, ctx, body_queue, engine_body=pipeline.body,
             )
             goose_calls += review_calls
             # Children the review spawned via routing[] need to count as
@@ -310,8 +358,14 @@ class GooseLooper:
     # review
 
     def _run_review(self, review: Phase, ctx: Context,
-                    body_queue: deque[Phase]) -> tuple[int, bool, str, ReviewOutput | None]:
+                    body_queue: deque[Phase], *,
+                    engine_body: list[Phase] | None = None,
+                    ) -> tuple[int, bool, str, ReviewOutput | None]:
         """Run review; parse output; seed ledger; spawn body children.
+
+        `engine_body` is the pipeline's engine-built body — recorded into
+        routing[] with routed_by="engine" (ADR 0013) so the persisted
+        review is the whole pass's plan, not just the model's slice.
 
         Returns (goose_calls, succeeded, status, parsed_output).
         """
@@ -328,8 +382,15 @@ class GooseLooper:
             review if review.success_predicate is not None
             else dataclasses.replace(review, success_predicate=_review_output_parseable)
         )
+        started = datetime.now(timezone.utc).isoformat()
+        t0 = time.perf_counter()
         output = self._invoke_recipe(review_with_guard, ctx, overlays=self.review_overlays)
         if output is None:
+            self._emit_phase_event(
+                ctx, review, kind="review", status="failed", started=started, t0=t0,
+                error=self._invoke_error,
+                transcript=self._invoke_stats.get("last_output"),
+            )
             return 0, False, "error", None
 
         extracted = extract_json_with_provenance(output)
@@ -340,6 +401,10 @@ class GooseLooper:
             ), file=sys.stderr)
             if ctx.session_dir:
                 log_step(ctx.session_dir, "review: no wrapped JSON found by any recognizer")
+            self._emit_phase_event(
+                ctx, review, kind="review", status="failed", started=started, t0=t0,
+                error="no wrapped JSON found by any recognizer", transcript=output,
+            )
             return 1, False, "error", None
 
         if not extracted.is_canonical:
@@ -364,12 +429,33 @@ class GooseLooper:
             print(colored(f"Review protocol mismatch: {e}", Color.RED), file=sys.stderr)
             if ctx.session_dir:
                 log_step(ctx.session_dir, f"review: protocol mismatch ({e})")
+            self._emit_phase_event(
+                ctx, review, kind="review", status="failed", started=started, t0=t0,
+                error=f"protocol mismatch: {e}", transcript=output,
+            )
             return 1, False, "error", None
         except ValueError as e:
             print(colored(f"Review schema invalid: {e}", Color.RED), file=sys.stderr)
             if ctx.session_dir:
                 log_step(ctx.session_dir, f"review: schema invalid ({e})")
+            self._emit_phase_event(
+                ctx, review, kind="review", status="failed", started=started, t0=t0,
+                error=f"schema invalid: {e}", transcript=output,
+            )
             return 1, False, "error", None
+
+        # ADR 0013: routing[] is the plan of record for the WHOLE pass.
+        # Engine-built body phases are appended by the framework with
+        # routed_by="engine" — deterministic facts recorded by the party
+        # that owns them, never round-tripped through the model. Model
+        # entries stay first: children run before cadence phases (ADR
+        # 0006), so the list reads in execution order. Injected only when
+        # the body will actually run.
+        status = str(review_output.get("status", "done"))
+        if status == "done" and engine_body and not self.review_only:
+            review_output["routing"] = list(review_output.get("routing", [])) + [
+                _engine_routing_entry(p) for p in engine_body
+            ]
 
         # Stash the full payload for engine extensions to read.
         ctx.artifacts["review_output"] = dict(review_output)
@@ -397,7 +483,6 @@ class GooseLooper:
             log_step(ctx.session_dir, f"review: wrote {review_path}")
 
         # Spawn body children from routing[].
-        status = str(review_output.get("status", "done"))
         if status == "done":
             children = self._build_body_phases(review_output.get("routing", []))
             body_queue.extend(children)
@@ -411,12 +496,24 @@ class GooseLooper:
             if extra_children:
                 body_queue.extend(extra_children)
 
+        self._emit_phase_event(
+            ctx, review, kind="review", status="ok", started=started, t0=t0,
+            transcript=output,
+            actions=list(ctx.artifacts.get("operator_actions", [])),
+        )
         return 1, True, status, review_output
 
     def _build_body_phases(self, routing: list[RoutingEntry]) -> list[Phase]:
-        """Build body Phases from review routing entries via BranchPolicy."""
+        """Build body Phases from review routing entries via BranchPolicy.
+
+        Only routed_by="model" entries construct phases: "engine" entries
+        record phases the engine already built into pipeline.body (ADR
+        0013) — building them again would run the body twice.
+        """
         out: list[Phase] = []
         for entry in routing:
+            if entry.get("routed_by") == "engine":
+                continue
             recipe = entry.get("recipe")
             if not isinstance(recipe, str):
                 continue
@@ -522,6 +619,8 @@ class GooseLooper:
 
     def _run_phase_with_children(self, phase: Phase, ctx: Context) -> tuple[int, bool, list[Phase]]:
         self._announce(phase.name)
+        started = datetime.now(timezone.utc).isoformat()
+        t0 = time.perf_counter()
         # skip_if check (after the banner so the operator sees which phase
         # is being skipped and why).
         skip_result = phase.skip_if(ctx) if phase.skip_if is not None else None
@@ -532,10 +631,24 @@ class GooseLooper:
             print(colored(msg, Color.YELLOW))
             if ctx.session_dir:
                 log_step(ctx.session_dir, msg)
+            self._invoke_env, self._invoke_stats = {}, {}
+            self._invoke_prompt = None
+            self._emit_phase_event(
+                ctx, phase, kind="body", status="skipped", started=started, t0=t0,
+                skip_reason=(skip_result if isinstance(skip_result, str)
+                             else "skip_if returned True"),
+            )
             return 0, True, []  # skip counts as ok (handled by caller as skipped)
 
+        outputs_before = len(ctx.artifacts.get("outputs_written", []))
+        actions_before = len(ctx.artifacts.get("operator_actions", []))
         output = self._invoke_recipe(phase, ctx)
         if output is None:
+            self._emit_phase_event(
+                ctx, phase, kind="body", status="failed", started=started, t0=t0,
+                error=self._invoke_error,
+                transcript=self._invoke_stats.get("last_output"),
+            )
             return 0, False, []
 
         children: list[Phase] = []
@@ -550,9 +663,116 @@ class GooseLooper:
                 if ctx.session_dir:
                     log_step(ctx.session_dir, f"Phase {phase.name} post_process raised: {e}")
 
+        self._emit_phase_event(
+            ctx, phase, kind="body", status="ok", started=started, t0=t0,
+            transcript=output,
+            outputs=list(ctx.artifacts.get("outputs_written", []))[outputs_before:],
+            actions=list(ctx.artifacts.get("operator_actions", []))[actions_before:],
+        )
         if ctx.session_dir:
             log_step(ctx.session_dir, f"Phase {phase.name} completed.")
         return 1, True, children
+
+    # ------------------------------------------------------------------
+    # phase telemetry (ADR 0012, PROTOCOL §14)
+
+    def _emit_phase_event(self, ctx: Context, phase: Phase, *, kind: str,
+                          status: str, started: str, t0: float,
+                          transcript: Optional[str] = None,
+                          outputs: Optional[list[Any]] = None,
+                          actions: Optional[list[Any]] = None,
+                          error: Optional[str] = None,
+                          skip_reason: Optional[str] = None) -> None:
+        """One wide event per phase, appended as it settles. Best-effort:
+        telemetry never fails a pass the work itself did not fail."""
+        if not ctx.session_dir:
+            return
+        # Egress tripwire (ADR 0014): secret-shaped values never persist,
+        # and a hit turns into a flag + an operator action — the seal
+        # queue goes red instead of the leak being a later discovery.
+        flags: list[str] = []
+        if transcript is not None:
+            transcript, findings = scan_and_redact(transcript)
+            if findings:
+                kinds = ", ".join(f"{f.kind} ×{f.count}" for f in findings)
+                flags.append(f"secret-like content redacted ({kinds})")
+                action = {
+                    "action": f"ROTATE CREDENTIALS: phase {phase.name} output "
+                              f"contained secret-shaped content",
+                    "why": f"{kinds} — values were redacted in the persisted "
+                           f"transcript, but the phase's output already went "
+                           f"to the model provider; treat them as compromised. "
+                           f"Likely prompt injection or an over-permissive "
+                           f"phase reading files it should not.",
+                }
+                ctx.add_operator_action(**action)
+                actions = list(actions or []) + [action]
+                log_step(ctx.session_dir, f"GUARDRAIL: {flags[0]} in phase {phase.name}")
+        # Retry attempts get the same secret handling as the transcript
+        # they almost became: a secret in attempt 2's output reached the
+        # provider even if attempt 3 succeeded clean.
+        attempt_log = list(getattr(self, "_invoke_stats", {}).get("attempt_log") or [])
+        retry_kinds: list[str] = []
+        for entry in attempt_log:
+            if entry.get("output") is not None:
+                redacted, r_findings = scan_and_redact(entry["output"])
+                entry["output"] = redacted
+                retry_kinds += [f"{f.kind} ×{f.count}" for f in r_findings]
+        if retry_kinds:
+            kinds = ", ".join(retry_kinds)
+            flag = f"secret-like content redacted in retry attempts ({kinds})"
+            flags.append(flag)
+            action = {
+                "action": f"ROTATE CREDENTIALS: phase {phase.name} retry "
+                          f"attempts contained secret-shaped content",
+                "why": f"{kinds} — a non-final attempt's output carried it, "
+                       f"so it reached the model provider even though the "
+                       f"phase eventually settled clean. Treat it as "
+                       f"compromised.",
+            }
+            ctx.add_operator_action(**action)
+            actions = list(actions or []) + [action]
+            log_step(ctx.session_dir, f"GUARDRAIL: {flag} in phase {phase.name}")
+        prompt = getattr(self, "_invoke_prompt", None)
+        if prompt is not None:
+            prompt, p_findings = scan_and_redact(prompt)
+            if p_findings:
+                kinds = ", ".join(f"{f.kind} ×{f.count}" for f in p_findings)
+                flag = f"secret-like content redacted in prompt ({kinds})"
+                flags.append(flag)
+                action = {
+                    "action": f"ROTATE CREDENTIALS: phase {phase.name} prompt "
+                              f"contained secret-shaped content",
+                    "why": f"{kinds} — a secret was pasted INTO the model's "
+                           f"input (an env value, an env_method, or a context "
+                           f"file carried it), so it reached the provider. "
+                           f"Rotate it, then fix the source that pasted it.",
+                }
+                ctx.add_operator_action(**action)
+                actions = list(actions or []) + [action]
+                log_step(ctx.session_dir, f"GUARDRAIL: {flag} in phase {phase.name}")
+        self._event_seq += 1
+        telemetry.record_phase(
+            ctx.session_dir,
+            seq=self._event_seq,
+            name=phase.name,
+            kind=kind,
+            recipe=str(phase.recipe_path),
+            label=phase.label,
+            status=status,
+            started=started,
+            duration_s=time.perf_counter() - t0,
+            env=getattr(self, "_invoke_env", None),
+            outputs=outputs,
+            transcript_text=transcript,
+            prompt_text=prompt,
+            error=error,
+            skip_reason=skip_reason,
+            attempts=getattr(self, "_invoke_stats", {}).get("attempts"),
+            attempt_log=attempt_log,
+            actions=actions,
+            flags=flags,
+        )
 
     # ------------------------------------------------------------------
     # generic phase + recipe invocation
@@ -561,12 +781,26 @@ class GooseLooper:
                    overlays: list[Path] | None = None,
                    is_summary: bool = False) -> tuple[int, bool]:
         self._announce(phase.name)
+        kind = "summary" if is_summary else "body"
+        started = datetime.now(timezone.utc).isoformat()
+        t0 = time.perf_counter()
+        outputs_before = len(ctx.artifacts.get("outputs_written", []))
+        actions_before = len(ctx.artifacts.get("operator_actions", []))
         output = self._invoke_recipe(phase, ctx, overlays=overlays)
         if output is None:
+            self._emit_phase_event(
+                ctx, phase, kind=kind, status="failed", started=started, t0=t0,
+                error=self._invoke_error,
+                transcript=self._invoke_stats.get("last_output"),
+            )
             return 0, False
         if is_summary and ctx.session_dir:
             summary_path = ctx.session_dir / "summary.md"
-            summary_path.write_text(output)
+            redacted_summary, summary_findings = scan_and_redact(output)
+            summary_path.write_text(redacted_summary)
+            if summary_findings:
+                log_step(ctx.session_dir,
+                         "GUARDRAIL: secret-like content redacted in summary.md")
             log_step(ctx.session_dir, f"summary: wrote {summary_path}")
         if phase.post_process is not None:
             try:
@@ -574,6 +808,12 @@ class GooseLooper:
             except Exception as e:
                 print(colored(f"\nPhase {phase.name} post_process raised: {e}", Color.RED),
                       file=sys.stderr)
+        self._emit_phase_event(
+            ctx, phase, kind=kind, status="ok", started=started, t0=t0,
+            transcript=output,
+            outputs=list(ctx.artifacts.get("outputs_written", []))[outputs_before:],
+            actions=list(ctx.artifacts.get("operator_actions", []))[actions_before:],
+        )
         if ctx.session_dir:
             log_step(ctx.session_dir, f"Phase {phase.name} completed.")
         return 1, True
@@ -582,6 +822,12 @@ class GooseLooper:
                        overlays: list[Path] | None = None) -> str | None:
         phase_env = phase.build_env(ctx)
         extra_env = {**ctx.base_env, **phase_env}
+        # Telemetry side-channel (ADR 0012): what THIS invocation injected
+        # and how goose behaved, readable by _emit_phase_event afterwards.
+        self._invoke_env = phase_env
+        self._invoke_stats = {}
+        self._invoke_error = None
+        self._invoke_prompt = None
         try:
             with prepared_recipe(
                 Path(phase.recipe_path),
@@ -590,6 +836,10 @@ class GooseLooper:
                 local_path=_local_overlay_for(Path(phase.recipe_path)),
                 overlay_paths=overlays or [],
             ) as effective_path:
+                try:
+                    self._invoke_prompt = Path(effective_path).read_text()
+                except OSError:
+                    self._invoke_prompt = None
                 return run_goose_with_retry(
                     effective_path,
                     self.model,
@@ -598,9 +848,12 @@ class GooseLooper:
                     base_delay=self.config.retry.base_delay,
                     success_predicate=phase.success_predicate,
                     label=phase.label or recipe_label(phase.recipe_path),
+                    stats=self._invoke_stats,
+                    sandbox=self._sandbox,
                 )
         except RuntimeError as e:
             print(colored(f"\nPhase {phase.name} failed: {e}", Color.RED), file=sys.stderr)
+            self._invoke_error = str(e)
             if ctx.session_dir:
                 log_step(ctx.session_dir, f"Phase {phase.name} FAILED: {e}")
             return None
@@ -687,6 +940,21 @@ def _prompt_references_var(prompt: str, var: str) -> bool:
     """
     pattern = r"\$\{" + re.escape(var) + r"\}|\$" + re.escape(var) + r"(?![A-Za-z0-9_])"
     return re.search(pattern, prompt) is not None
+
+
+def _engine_routing_entry(phase: Phase) -> RoutingEntry:
+    """A routing[] record for one engine-built body phase (ADR 0013).
+
+    Engine phases carry a build_env closure rather than a params dict, so
+    the record is recipe + reason (the phase's label or name) — enough
+    for the plan of record; params stay the model-routing shape's field.
+    """
+    return {
+        "recipe": Path(phase.recipe_path).stem,
+        "params": {},
+        "reason": phase.label or phase.name,
+        "routed_by": "engine",
+    }
 
 
 def _params_to_env(params: dict[str, Any]) -> dict[str, str]:

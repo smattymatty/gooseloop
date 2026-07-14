@@ -181,3 +181,19 @@ def test_preview_recipe_context_maps_labels_and_optional(tmp_path):
 
 def test_preview_recipe_context_no_context_block_is_empty():
     assert preview_recipe_context({"prompt": "hi"}, {}) == []
+
+
+def test_env_file_ok_when_engine_declares_injection():
+    """An env_file var the engine injects at phase-build time (declared
+    via Engine.injected_env) previews OK — not a false 'unset' failure.
+    The doc_drift CONTEXT_FILE chip was the motivating red herring."""
+    from gooseloop.introspect import preview_source
+
+    declared = {"CONTEXT_FILE": "per-pair bundle the engine writes"}
+    p = preview_source("env_file:CONTEXT_FILE", {}, injected_env=declared)
+    assert p.ok is True
+    assert "injected per phase" in p.detail
+
+    undeclared = preview_source("env_file:CONTEXT_FILE", {})
+    assert undeclared.ok is False
+    assert "unset" in undeclared.detail

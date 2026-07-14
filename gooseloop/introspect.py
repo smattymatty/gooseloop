@@ -96,8 +96,14 @@ def list_env_methods(environment: Any) -> list[EnvMethodInfo]:
 
 
 def preview_source(source: str, env: dict[str, str], *,
-                   environment: Any = None) -> SourcePreview:
-    """Dry-run one context source. Never reads bodies, never calls methods."""
+                   environment: Any = None,
+                   injected_env: dict[str, str] | None = None) -> SourcePreview:
+    """Dry-run one context source. Never reads bodies, never calls methods.
+
+    `injected_env` is the engine's declaration of vars it injects at
+    phase-build time (Engine.injected_env) — absent from the static scope
+    by nature, so an env_file naming one is OK-by-declaration, not a
+    failure."""
     kind, arg = split_source(source)
     if kind not in SOURCE_KINDS:
         detail = (
@@ -111,6 +117,11 @@ def preview_source(source: str, env: dict[str, str], *,
         var_name = arg.strip()
         path_str = env.get(var_name)
         if not path_str:
+            if injected_env and var_name in injected_env:
+                desc = injected_env[var_name] or "engine-assembled at run time"
+                return SourcePreview(
+                    source, kind, var_name, True,
+                    f"injected per phase by the engine — {desc}")
             return SourcePreview(source, kind, var_name, False,
                                  f"env var {var_name} is unset or empty")
         return _preview_path(source, kind, path_str)
@@ -154,7 +165,8 @@ def preview_source(source: str, env: dict[str, str], *,
 
 
 def preview_recipe_context(recipe: dict[str, Any], env: dict[str, str], *,
-                           environment: Any = None) -> list[ContextPreview]:
+                           environment: Any = None,
+                           injected_env: dict[str, str] | None = None) -> list[ContextPreview]:
     """Dry-run every entry of a recipe's context: block, in declared order."""
     out: list[ContextPreview] = []
     for entry in recipe.get("context") or []:
@@ -165,6 +177,7 @@ def preview_recipe_context(recipe: dict[str, Any], env: dict[str, str], *,
             optional=bool(entry.get("optional", False)),
             preview=preview_source(
                 str(entry.get("source", "")), env, environment=environment,
+                injected_env=injected_env,
             ),
         ))
     return out

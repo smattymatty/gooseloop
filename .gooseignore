@@ -1,0 +1,11 @@
+# THE BOUNDARY (PROTOCOL section 15): paths goose may not touch, on top
+# of the built-in floor (.env*, *.pem, *.key, credentials*, ~/.ssh,
+# ~/.aws, ~/.gnupg, ...). One pattern per line: a bare name or glob
+# masks matching basenames anywhere; a pattern with / is an anchored
+# path masked whole. No ! negation.
+#
+# This file's PRESENCE also upgrades "bubblewrap missing" from a nudge
+# to a refusal (exit 4): commit it and nobody runs unsandboxed by
+# accident.
+*.sqlite
+*.sqlite3

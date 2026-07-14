@@ -109,7 +109,7 @@ class _CannedGoose:
 
     def __call__(self, recipe_path: str, model: str, extra_env=None, *,
                  max_retries=6, base_delay=5, success_predicate=None,
-                 label=None) -> str:
+                 label=None, stats=None, sandbox=None) -> str:
         self.calls.append(recipe_path)
         for stem, output in self.mapping.items():
             if stem in recipe_path:
@@ -292,7 +292,8 @@ def test_shipped_recipes_reference_their_policy_output_env():
     root = _P(__file__).resolve().parents[1]
     for rel, var in [
         ("engines/hello_world/recipes/greet.yaml", "GREETING_FILE"),
-        ("engines/git_recap/recipes/summarize-commit.yaml", "OUTPUT_PATH"),
+        ("engines/git_recap/recipes/daily.yaml", "OUTPUT_PATH"),
+        ("engines/git_recap/recipes/weekly.yaml", "OUTPUT_PATH"),
     ]:
         text = (root / rel).read_text()
         assert f"${{{var}}}" in text, f"{rel} must reference ${{{var}}}"
@@ -308,9 +309,13 @@ def test_shipped_engines_pass_output_env_verification(tmp_path):
     hw = importlib.import_module("engines.hello_world.engine")
     gr = importlib.import_module("engines.git_recap.engine")
 
+    recap_env = gr.GitRecapEnvironment(
+        repos=[], author="auto", journal_dir=tmp_path / "journal",
+        state_path=tmp_path / "git-recap.state.json",
+    )
     for engine in [
         hw.HelloEngine(),
-        gr.GitRecapEngine(output_dir=tmp_path),
+        gr.GitRecapEngine(env=recap_env),
     ]:
         looper = GooseLooper(
             engine=engine,
@@ -318,6 +323,27 @@ def test_shipped_engines_pass_output_env_verification(tmp_path):
             save=False,
         )
         looper._verify_output_env_contracts()  # must not raise
+
+
+def test_hello_world_greet_skips_when_greeting_exists(tmp_path, monkeypatch):
+    """Re-runs are idempotent: a name whose greeting is already on disk is
+    skipped with a reason before any model call; a missing or empty file
+    lets the phase run."""
+    import importlib
+    hw = importlib.import_module("engines.hello_world.engine")
+
+    monkeypatch.setenv("GREETINGS_DIR", str(tmp_path))
+    policy = hw.HelloEngine().branch_policies["greet"]
+
+    assert policy.skip_when({"name": "alice"}) is None  # nothing on disk yet
+
+    (tmp_path / "alice.txt").write_text("Hello, alice!\n")
+    reason = policy.skip_when({"name": "alice"})
+    assert reason == "greeting already on disk: alice.txt"
+
+    (tmp_path / "bob.txt").write_text("")  # empty file = not produced
+    assert policy.skip_when({"name": "bob"}) is None
+    assert policy.skip_when({}) is None  # no name param: not the skip's call
 
 
 # ---- ADR 0011: output_env injection + contract verification -------
@@ -557,9 +583,9 @@ def test_review_default_predicate_rejects_truncated_output(tmp_path, monkeypatch
     )  # cuts mid-string mid-emit; no closing markers, unbalanced braces.
 
     calls = []
-    def fake_run(recipe_path, model, extra_env=None, *,
+    def fake_run(recipe_path, model, extra_env=None, *, stats=None,
                  max_retries=6, base_delay=5, success_predicate=None,
-                 label=None):
+                 label=None, sandbox=None):
         calls.append(recipe_path)
         # Simulate retry behaviour of the real run_goose_with_retry:
         # the predicate fires per attempt and gates retry.
@@ -655,3 +681,85 @@ def test_local_overlay_for_none_when_absent(tmp_path):
     base.write_text("prompt: base\n")
     assert _local_overlay_for(base) is None
     assert _local_overlay_for(tmp_path / "review.json") is None
+
+
+# ---- routing[] as plan of record (ADR 0013) --------------------------
+
+def test_engine_body_recorded_in_routing_with_provenance(tmp_path, monkeypatch):
+    """Engine-built body phases appear in the review's routing[] with
+    routed_by="engine", AFTER the model's entries — the persisted review
+    is the whole pass's plan, not just the model's slice."""
+    canned = _CannedGoose({
+        "review.yaml": REVIEW_OUTPUT,
+        "greet": GREET_OUTPUT,
+        "cadence": "did the cadence thing\n",
+        "summary.yaml": SUMMARY_OUTPUT,
+    })
+    _patch_goose(monkeypatch, canned)
+
+    engine = _RecordingEngine()
+    cadence = Phase(name="cadence", recipe_path="recipes/cadence.yaml",
+                    label="cadence[weekly]")
+    original_pipeline = engine.pipeline
+    engine.pipeline = lambda ctx: Pipeline(  # type: ignore[method-assign]
+        review=original_pipeline(ctx).review,
+        body=[cadence],
+        summary=original_pipeline(ctx).summary,
+    )
+    looper = GooseLooper(
+        engine=engine, environment=_SilentEnv(),
+        config=_make_config(tmp_path), save=False,
+    )
+    result = looper.begin_loop()
+    routing = result["review_output"]["routing"]
+
+    assert [e["routed_by"] for e in routing] == ["model", "model", "engine"]
+    engine_entry = routing[-1]
+    assert engine_entry["recipe"] == "cadence"
+    assert engine_entry["reason"] == "cadence[weekly]"
+    # Record, never instruction: the cadence phase ran exactly once
+    # (from pipeline.body), not twice.
+    assert sum("cadence" in c for c in canned.calls) == 1
+
+
+def test_engine_routing_entries_not_rebuilt_as_phases(tmp_path):
+    """_build_body_phases must skip routed_by='engine' — those phases
+    already exist in pipeline.body."""
+    looper = GooseLooper(
+        engine=_RecordingEngine(), environment=_SilentEnv(),
+        config=_make_config(tmp_path), save=False,
+    )
+    phases = looper._build_body_phases([
+        {"recipe": "greet", "params": {"name": "x"}, "reason": "", "routed_by": "model"},
+        {"recipe": "greet", "params": {}, "reason": "engine-built", "routed_by": "engine"},
+    ])
+    assert len(phases) == 1
+
+
+def test_partial_review_gets_no_engine_injection(tmp_path, monkeypatch):
+    """A skipped body must not be claimed by the plan of record."""
+    import json as _json
+    partial = (
+        "<<<DELIVERABLE_JSON>>>\n"
+        + _json.dumps({
+            "protocol_version": "1.0", "status": "partial",
+            "summary": "s", "insights": [], "routing": [], "operator_actions": [],
+        })
+        + "\n<<<END_DELIVERABLE>>>\n"
+    )
+    canned = _CannedGoose({"review.yaml": partial, "summary.yaml": SUMMARY_OUTPUT})
+    _patch_goose(monkeypatch, canned)
+
+    engine = _RecordingEngine()
+    original_pipeline = engine.pipeline
+    engine.pipeline = lambda ctx: Pipeline(  # type: ignore[method-assign]
+        review=original_pipeline(ctx).review,
+        body=[Phase(name="cadence", recipe_path="recipes/cadence.yaml")],
+        summary=None,
+    )
+    looper = GooseLooper(
+        engine=engine, environment=_SilentEnv(),
+        config=_make_config(tmp_path), save=False,
+    )
+    result = looper.begin_loop()
+    assert result["review_output"]["routing"] == []

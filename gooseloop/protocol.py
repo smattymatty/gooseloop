@@ -29,10 +29,19 @@ PROTOCOL_MAJOR = 1
 
 
 class RoutingEntry(TypedDict, total=False):
-    """One entry in the review's routing[] list."""
+    """One entry in the review's routing[] list.
+
+    routing[] is the pass's plan of record, not just the model's
+    instruction channel (ADR 0013). `routed_by` carries provenance:
+    "model" entries were emitted by the review and the framework builds
+    body phases from them; "engine" entries are appended by the
+    FRAMEWORK to record body phases the engine built deterministically
+    in pipeline() — they are record, never instruction.
+    """
     recipe: str
     params: dict[str, Any]
     reason: str
+    routed_by: str  # "model" | "engine"
 
 
 class OperatorAction(TypedDict, total=False):
@@ -129,6 +138,17 @@ def validate_review(payload: dict[str, Any]) -> ReviewOutput:
     for key in DEFAULTED_LIST_KEYS:
         if key not in out or out[key] is None:
             out[key] = []
+    # A bare-string insights (a model writing prose where a list belongs)
+    # becomes a one-element list; non-string members are coerced. Caught
+    # live 2026-07-13: a review shipped insights as one string, the run
+    # proceeded fine, and every strict downstream reader choked on the
+    # artifact.
+    if isinstance(out["insights"], str):
+        out["insights"] = [out["insights"]]
+    elif isinstance(out["insights"], list):
+        out["insights"] = [str(i) for i in out["insights"]]
+    else:
+        out["insights"] = []
     out["operator_actions"] = _normalise_operator_actions(out["operator_actions"])
     out["routing"] = _normalise_routing(out["routing"])
     return out  # type: ignore[return-value]
@@ -176,6 +196,10 @@ def _normalise_routing(entries: Any) -> list[RoutingEntry]:
             "recipe": recipe.strip(),
             "params": params if isinstance(params, dict) else {},
             "reason": str(entry.get("reason", "")),
+            # Model-emitted entries are "model" regardless of what the
+            # model claims: "engine" provenance is reserved for entries
+            # the framework itself appends (ADR 0013).
+            "routed_by": "model",
         }
         out.append(normalised)
     return out

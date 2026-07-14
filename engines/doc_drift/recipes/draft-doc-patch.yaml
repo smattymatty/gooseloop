@@ -1,10 +1,12 @@
 version: "1.0.0"
 title: "doc-drift: draft a patch for one drifted derived view"
-description: "Body phase: read the bundled canonical + derived, draft the edit that brings the derived view back in sync."
+description: "Body phase: read the bundled canonical + derived and the recent git-recap journal, draft the edit that brings the derived view back in sync."
 
 context:
   - label: "BOTH SIDES OF THE DRIFTED PAIR"
     source: env_file:CONTEXT_FILE
+  - label: "RECENT JOURNAL (git-recap dailies + weeklies)"
+    source: env_method:recent_journal
 
 prompt: |
   You are drafting a patch for ONE derived view that may have fallen behind its
@@ -12,12 +14,11 @@ prompt: |
   the CANONICAL source(s) of truth, then the DERIVED view (fetched live if it is
   a URL), then a NOTE describing what "in sync" means for this pair.
 
-  The bundle MAY also include a "WHAT CHANGED IN THE CANONICAL SINCE THE DERIVED
-  LAST FOLLOWED" section: operator commit recaps for the changes that landed on
-  the canonical after the derived view last moved. If it is present, use it to
-  zero in on what actually changed and why, instead of re-diffing both whole
-  documents. If it is absent, just compare the two texts as before. The
-  canonical text above is always the source of truth; the recaps only explain it.
+  The RECENT JOURNAL block above is the operator's own work log (git-recap's
+  last dailies and weeklies). When it mentions changes to this pair's canonical,
+  use it to zero in on what actually changed and why, instead of re-diffing both
+  whole documents; when it is empty or unrelated, just compare the two texts.
+  The canonical text is always the source of truth; the journal only explains it.
 
   Pair: ${PAIR_ID}
 

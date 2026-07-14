@@ -9,6 +9,123 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Phase events persist the model's INPUT, not just its output (ADR 0012
+  amendment): `prompt`/`prompt_chars` point at
+  `transcripts/<seq>-<name>.prompt.yaml`, the rendered recipe exactly as
+  goose received it — captured before the spawn so failed phases keep
+  theirs, redacted through the egress tripwire, and a secret found in a
+  prompt flags the event and raises a rotate action. Closes the
+  "investigation dead-ends at what was actually in the pasted context"
+  gap.
+
+- §14 events carry `attempt_log`: one record per goose invocation
+  (outcome, returncode, duration, retry delay), with every NON-final
+  attempt's full output persisted as
+  `transcripts/<seq>-<name>.attempt-<n>.txt` — retried phases keep the
+  evidence of what the failed tries actually said. Retry outputs pass
+  through the egress tripwire like transcripts and prompts: a secret in
+  a failed attempt flags the event and raises the rotate action.
+
+- Saved runs keep the boundary's mask MAP (`boundary-masks.json`:
+  patterns in force + exact paths masked, paths only), so boundary
+  anomalies diff across runs. The map is itself masked — its basename is
+  on the built-in floor and the current run's copy is appended to the
+  spawn prefix — because a list of where secrets live is denied to the
+  goose the same as what it maps.
+
+- THE BOUNDARY (`gooseloop.boundary`, PROTOCOL section 15, ADR 0015):
+  when bubblewrap is available, every goose spawn runs inside a mount
+  namespace where credential-shaped paths do not exist — a built-in deny
+  floor (`.env*`, `*.pem`, `*.key`, `credentials*`, `~/.ssh`, `~/.aws`,
+  `~/.gnupg`, …) always applies, and a committed `.gooseignore` at the
+  loop root extends it (gitignore-style patterns, no `!` negation).
+  Masked files read empty, masked directories list empty; everything
+  else — write access, network, environment — is untouched. A
+  `.gooseignore` without bubblewrap refuses the run with exit 4 before
+  any session artifact exists; neither present is a one-line stderr
+  nudge. `session.log` records `boundary: N paths masked (bwrap)` per
+  pass. New public exports: `boundary`, `BoundaryUnavailableError`,
+  `GOOSEIGNORE_FILENAME`.
+
+- SECURITY.md: the threat model (the attacker is a line of text), the
+  four defense layers, what is deliberately NOT protected, and the
+  private reporting channel. The egress-tripwire decision record is
+  ADR 0014.
+
+- `gooseloop.guardrails` (egress tripwire): phase transcripts and
+  summary.md are scanned for secret-shaped content (known token formats,
+  KEY=value assignments, private-key blocks) and redacted BEFORE they
+  persist; a hit flags the §14 event and auto-raises a rotate-credentials
+  operator action. The context preamble now declares every pasted block
+  untrusted data, and hello_world validates that guest-list lines look
+  like names. Signature-based seatbelts, labeled as such — containment is
+  a separate layer.
+
+- hello_world reads its guest list from a config-driven names file
+  (`[hello_world] names = "names.txt"`, one name per line, # comments
+  skipped) instead of a hardcoded list — procured like every other input:
+  `names.example.txt` committed, `names.txt` gitignored, empty/missing
+  file refused at precheck with the exact cp command.
+
+- routing[] is now the whole pass's plan of record (ADR 0013, PROTOCOL
+  section 2). Every entry carries `routed_by: "model" | "engine"`:
+  validation stamps model-emitted entries, and the framework appends one
+  `routed_by: "engine"` entry per engine-built body phase before the
+  review is persisted — so an engine-routed pass (doc_drift drafting 23
+  patches) no longer persists a review claiming it planned nothing.
+  Engine entries are record, never instruction: phases are only built
+  from model entries. Pre-0013 artifacts read as model-routed.
+
+### Added
+
+- §14 events carry `actions` — the operator actions each phase raised
+  (per-phase ledger delta). doc_drift now raises its seal decision the
+  moment a drift=yes draft lands (body-phase post_process, deduped
+  against the summary's re-raise), so decisions surface mid-run and a
+  crashed pass keeps what it raised instead of losing it with the
+  unwritten ledger.
+
+- `Engine.injected_env()` (PROTOCOL §7 introspection): engines declare the
+  env vars they inject at phase-BUILD time (per routing entry / per body
+  phase), which by nature never appear in the static env scope. Preview
+  tooling (`recipe --sources`, dashboards) renders a declared
+  `env_file:` var as "injected per phase by the engine" instead of a
+  false "unset" failure — doc_drift's per-pair `CONTEXT_FILE` bundle was
+  the motivating red herring. doc_drift also gains
+  `env_method:recent_journal` (last 5 dailies + 2 weeklies, capped) as a
+  DECLARED context source on the draft recipe, replacing the invisible
+  in-bundle journal section.
+
+- git_recap rewritten as a journal engine (grill, 2026-07-13): one
+  combined daily entry per date across all configured repos
+  (`journal/daily/<date>.md`, sectioned by project), plus a weekly review
+  when an ISO week closes (`journal/weekly/<year>-W<ww>.md`). Per-repo
+  commit watermarks (`git-recap.state.json`) make each daily cover exactly
+  the commits no daily has covered — gaps and same-day amend runs
+  included; watermarks advance only after the entry verifiably writes.
+  The review routes `daily`/`weekly` and deterministic `skip_when`
+  seatbelts verify every routing (wrong date, weekly-not-due, nothing
+  new). Replaces the per-commit recap files; `[git_recap]` config keys
+  are now `repos`, `author`, `journal_dir`, `state`, `first_run_days`.
+- doc_drift's "what changed in the canonical" bundle section now reads
+  git_recap's journal dailies (date-matched to the commits that touched
+  the canonical) instead of the retired per-commit recap files; the
+  engines compose with zero config when they share a loop root
+  (`[doc_drift] journal_dir` overrides; borrows `[git_recap] journal_dir`
+  otherwise).
+
+- Phase telemetry (ADR 0012, PROTOCOL §14): every saved run now writes
+  `<session>/phases.jsonl` — one wide structured event per phase (review,
+  body, and summary uniformly: status, duration, injected env, recorded
+  outputs, attempts), appended as each phase settles so it live-tails —
+  plus the phase's full goose transcript under `<session>/transcripts/`.
+  Failed phases keep their last attempt's transcript, so a review that
+  emitted malformed JSON finally leaves evidence. The session-constant
+  base env is recorded once in `session.meta.json` as `base_env`.
+  `gooseloop.telemetry` (public) ships the torn-line-tolerant reader.
+  `run_goose_with_retry` gains an optional `stats` out-param (additive)
+  reporting attempts and the final attempt's output.
+
 - `BranchPolicy.output_env` (ADR 0011, PROTOCOL §5): the engine names the
   env var its computed output path is injected under (default
   `OUTPUT_PATH`, so existing engines are untouched). The contract is
@@ -17,8 +134,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with a hard error on a mismatch, so no model call is spent on a
   recipe/policy pairing that would silently disagree. hello_world now
   demonstrates the wire explicitly (`output_env="GREETING_FILE"` in the
-  engine, `${GREETING_FILE}` in greet.yaml) and drops the reserved,
-  unenforced `intent` tag from the teaching example.
+  engine, `${GREETING_FILE}` in greet.yaml), registers a `skip_when` so
+  re-runs skip names already greeted on disk (the git_recap idempotency
+  pattern, now in the first example an author reads), and drops the
+  reserved, unenforced `intent` tag from the teaching example.
 - `run.lock`: one run at a time per loop root (ADR 0010, PROTOCOL §13).
   `begin_loop()` holds `<loop root>/run.lock` for the whole pass; a second
   run is refused before doing any work — CLI exit code 3, library callers

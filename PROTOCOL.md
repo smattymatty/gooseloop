@@ -43,7 +43,7 @@ emit a structured plan that the framework reads.
   "summary": "one-paragraph state, operator-facing",
   "insights": ["...", "..."],
   "routing": [
-    { "recipe": "<recipe-name>", "params": { "...": "..." }, "reason": "..." }
+    { "recipe": "<recipe-name>", "params": { "...": "..." }, "reason": "...", "routed_by": "model | engine" }
   ],
   "operator_actions": [
     { "action": "...", "why": "...", "...": "engines may add fields" }
@@ -85,14 +85,39 @@ sentinels is narration and ignored.
 
 ### routing[] semantics
 
-Each entry is `{ recipe, params, reason }`. The framework constructs body
-Phases from these entries using the engine's `BranchPolicy` registry (§5).
-`reason` is operator-facing free text.
+Each entry is `{ recipe, params, reason, routed_by }`. The framework
+constructs body Phases from `routed_by: "model"` entries using the engine's
+`BranchPolicy` registry (§5). `reason` is operator-facing free text.
 
 `params` is a dict of values the framework injects as env vars into the phase
 recipe. Keys become uppercase env-var names: `{"panel_id": "ServersTable"}`
 becomes `PANEL_ID=ServersTable`. Engines that need richer typing should
 declare it in their `BranchPolicy`.
+
+### routing[] is the plan of record (ADR 0013)
+
+The persisted review is the whole pass's plan, for both routing modes.
+
+- Review recipes never emit `routed_by`; validation stamps every
+  model-emitted entry `"model"` regardless of what the model claims.
+- When the engine built body phases directly in `pipeline()` (the
+  engine-routed mode; doc_drift's shape), the FRAMEWORK appends one entry
+  per engine-built phase with `routed_by: "engine"` after validation and
+  before the review is persisted — deterministic facts recorded by the
+  party that owns them, never round-tripped through the model. The review
+  recipe's "do not emit routing" instruction stands.
+- `routed_by: "engine"` entries are record, never instruction: the
+  framework does not build phases from them (they already exist in
+  `pipeline.body`). Model entries stay first in the list — children run
+  before engine cadence phases (§6 ordering), so routing[] reads in
+  execution order.
+- Injection happens only when the body will actually run (`status:
+  "done"`, not `--review-only`); a skipped body leaves routing honest
+  about what happened.
+
+Consumers can therefore trust `routing[]` as "what this pass planned to
+do" without knowing the engine's routing mode; entries lacking
+`routed_by` (pre-0013 artifacts) are model-routed.
 
 ## 3. The summary contract
 
@@ -365,6 +390,7 @@ gooseloop/                   # the framework package (the OSS extraction target)
 ├── toolkit.py              # stdlib-only engine helpers (Source, fetch, state io)
 ├── artifact.py             # versioned artifact contracts (see §12)
 ├── runlock.py              # run.lock, one run per loop root (see §13)
+├── telemetry.py            # phases.jsonl wide events (see §14)
 ├── session.py              # session folder management
 ├── footer.py               # per-call and per-session footers
 ├── text.py                 # ANSI, banners
@@ -389,6 +415,8 @@ my-project/
 │       ├── session.log         # append-only event log
 │       ├── summary.md          # the summary phase's full verbatim output
 │       ├── ledger.json         # FINAL operator_actions + outputs_written
+│       ├── phases.jsonl        # one wide event per phase (§14)
+│       ├── transcripts/        # full goose output per phase (§14)
 │       └── actions/            # engine-specific (e.g. review.json)
 └── ...                     # engine-specific files (inputs, journals, output dirs)
 ```
@@ -516,6 +544,141 @@ Consuming projects gitignore `run.lock` (§10 layout).
 
 Decision record: ADR 0010.
 
+## 14. Phase telemetry
+
+Every phase of every saved run leaves a wide structured event and its full
+goose transcript (ADR 0012):
+
+```
+<session>/phases.jsonl                  one JSON object per line, appended
+                                        the moment each phase settles
+<session>/transcripts/<seq>-<name>.txt  the phase's full goose output
+```
+
+An event's fields:
+
+- `seq` — 1-based order of settlement within the pass.
+- `phase`, `kind` — the phase's name and its course: `review`, `body`, or
+  `summary`. All three courses emit events, uniformly.
+- `recipe`, `label` — what was invoked.
+- `status` — `ok`, `failed`, or `skipped`.
+- `started` (ISO 8601 UTC), `duration_s`.
+- `env` — the env injected FOR THIS PHASE (routing params, output path;
+  values capped at 500 chars). The session-constant base env is recorded
+  once in `session.meta.json` as `base_env`, never repeated per event.
+- `outputs` — the outputs this phase recorded via `ctx.record_output`
+  (the per-phase delta of the ledger's `outputs_written`). Only what the
+  framework observed; nothing inferred.
+- `transcript`, `transcript_chars` — session-relative path to the full
+  goose output. Failed phases keep their LAST attempt's transcript, so a
+  review that emitted malformed JSON leaves its evidence behind.
+- `prompt`, `prompt_chars` — session-relative path to the rendered
+  recipe this phase handed to goose (context blocks filled, env
+  substituted): what the model SAW, kept beside what it said. Captured
+  before goose runs, so failed phases keep it too. Redacted like
+  transcripts; a secret found here flags the event and raises a rotate
+  action, because a secret pasted into the input reached the provider
+  the same as one printed out.
+- `error`, `skip_reason`, `attempts`.
+- `attempt_log` — one record per goose invocation: `attempt`, `outcome`
+  (`ok`, `transient-error`, `rate-limited`, `predicate-rejected`,
+  `persistent-failure`, `recipe-error`), `returncode`, `duration_s`,
+  `retry_delay_s` (when a retry followed), and `transcript` /
+  `transcript_chars`. Non-final attempts keep their own transcript
+  (`transcripts/<seq>-<name>.attempt-<n>.txt`, redacted like everything
+  else — a secret in a failed attempt reached the provider even if the
+  phase settled clean, so it flags and raises the same rotate action);
+  the final entry points at the phase transcript. "Why does this phase
+  need three tries" ends at the actual three outputs.
+- `actions` — the operator actions THIS phase raised (the per-phase
+  ledger delta; the review's event carries the seed). Durable the moment
+  the phase settles, so consumers can surface decisions mid-run, and a
+  pass that dies before its ledger keeps what it raised.
+- `flags` — deterministic tripwires that fired on this phase's output
+  (e.g. "secret-like content redacted (...)"). Persisted transcripts and
+  summary.md are redacted BEFORE writing; a flagged phase also raises a
+  rotate-credentials operator action. Consumers render flags loud.
+
+Rules:
+
+- **Append-on-settle.** The file is live-tailable mid-run; consumers must
+  tolerate a torn final line (`gooseloop.telemetry.read_phase_events`
+  does).
+- **Additive keys only.** New event keys may appear in any release (§9);
+  existing keys never change meaning. Consumers must ignore keys they do
+  not know.
+- **One writer.** Only gooseloop writes these artifacts.
+- **Telemetry never fails a pass.** Recording is best-effort; the work's
+  own success is judged exactly as without it.
+- `--no-save` runs emit nothing (no session folder, no artifacts).
+
+Sessions created before this section exist without `phases.jsonl`;
+consumers fall back to parsing `session.log`.
+
+Decision record: ADR 0012.
+
+## 15. The boundary
+
+Whatever a phase's shell can see, a sufficiently manipulated phase can
+read. When bubblewrap is available, every goose invocation runs inside a
+mount namespace where denied paths are masked: a masked directory is an
+empty tmpfs, a masked file reads as empty (its name still lists — hide
+the name by masking its directory). Everything else — filesystem, write
+access, devices, network, environment — is identical to an unsandboxed
+run.
+
+Two pattern sources, one deny-list:
+
+- **The built-in floor** (`gooseloop.boundary.BUILTIN_DENY`) always
+  applies: credential-shaped basenames (`.env*`, `*.pem`, `*.key`,
+  `id_rsa*`, `credentials*`, …) anywhere under `$HOME`, plus the
+  anchored homes of credentials (`~/.ssh`, `~/.aws`, `~/.gnupg`, …).
+- **`.gooseignore` at the loop root extends the floor.** One pattern per
+  line: a bare name or glob masks matching basenames anywhere; a pattern
+  containing `/` (or starting `~`) is an anchored path masked whole.
+  `#` comments and blank lines are skipped. No `!` negation — a hole you
+  can punch in a security boundary is a boundary with a hole; the file
+  is refused if one appears. Commit the file: the boundary travels with
+  the repo.
+
+Enforcement decision table:
+
+| bubblewrap | `.gooseignore` | result |
+|---|---|---|
+| available | any | sandboxed run, floor + extensions |
+| missing | absent | unsandboxed run, one-line stderr nudge |
+| missing | present | REFUSED, exit 4, before any session artifact |
+
+Exit 4 is distinct from 1 (run error), 2 (usage), and 3 (lock held), so
+a supervisor can tell "install bubblewrap" from "fix the run".
+
+Rules:
+
+- The boundary resolves once per pass, in the looper, before the session
+  folder exists. A refused run leaves nothing behind.
+- `session.log` records `boundary: N paths masked (bwrap)` (or
+  `boundary: none`), so telemetry states whether a run was sandboxed.
+- Saved runs keep the mask MAP: `<session>/boundary-masks.json` records
+  the patterns in force (floor + `.gooseignore`, in order) and the exact
+  paths masked, `~`-shortened, paths only and never contents — so
+  "phase read an empty config" investigations diff run A's boundary
+  against run B's instead of dead-ending at a count. Unsandboxed runs
+  write `{"enforced": false, ...}`.
+- The map gets the boundary's own treatment: a list of where secrets
+  live is reconnaissance material, so `boundary-masks.json` is on the
+  built-in floor (past runs' maps are caught by the scan) and the
+  current run's map is appended to the spawn prefix after it is written.
+  Inside the sandbox the map reads empty; the operator and consumers
+  read it normally.
+- The boundary is confidentiality, not integrity: phases keep full write
+  access to everything unmasked, by design.
+- Secrets already in the spawn environment are inherited by goose as
+  before. Masking files does not curate `os.environ`; that is the
+  operator's job.
+
+Decision record: ADR 0015. The output-side layer (redaction, flags, the
+rotate action) is ADR 0014.
+
 ---
 
 This protocol is canonical. Disagreements between this document and the code
@@ -525,5 +688,5 @@ For the design history, see the ADRs in [`docs/adr/`](docs/adr/) —
 particularly 0000 (four-layer import topology), 0001 (Engine returns
 Pipeline), 0004 (Engine + Environment as siblings), 0005 (Environment ABC
 narrows), 0006 (Pipeline named slots), 0007 (Review output schema +
-operator_actions ledger), 0008 (recipe overlay merge), and 0010 (the run
-lock).
+operator_actions ledger), 0008 (recipe overlay merge), 0010 (the run lock), 0012 (phase
+telemetry), and 0015 (the boundary).

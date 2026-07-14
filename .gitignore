@@ -16,9 +16,13 @@ reviews/
 # present only while a run is in flight (PROTOCOL section 13)
 run.lock
 # git-recap engine output (configurable; default name)
-recaps/
+journal/
+# git-recap cross-run watermarks (machine-written)
+git-recap.state.json
 # hello-world engine output
 greetings/
+# hello-world guest list: user-procured; the committed template is names.example.txt
+names.txt
 # doc-drift patch drafts (configurable; default name)
 doc-drift-drafts/
 # doc-drift cross-run memory (machine-written)

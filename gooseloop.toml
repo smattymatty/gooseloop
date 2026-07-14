@@ -4,7 +4,7 @@
 [gooseloop]
 default_model = "deepseek/deepseek-v4-flash"
 sessions_dir = "reviews/sessions"
-default_engine = "engines.doc_drift"
+default_engine = "engines.hello_world"
 max_queue_depth = 50
 review_recipe = "review.yaml"
 summary_recipe = "summary.yaml"
@@ -12,19 +12,23 @@ summary_recipe = "summary.yaml"
 [gooseloop.retry]
 max_retries = 6
 base_delay = 5
+
+# hello-world reads its guest list from a file, one name per line.
+# First time:  cp names.example.txt names.txt   (names.txt is gitignored)
+
+[hello_world]
+names = "names.txt"
+greetings_dir = "greetings"
                    
 # Example config for the git-recap engine. Uncomment and edit, then run:
 #     python3 -m gooseloop run -e engines.git_recap
 
 [git_recap]
-repos = [
-    "/path/to/your/repo",
-    "/path/to/another/repo",
-]
-window_days = 7
-max_commits = 50         # total budget, split evenly across repos (25 each here); 0 = no cap
-author = "auto"          # or hardcode an email
-output_dir = "recaps"    # where per-commit summaries land
+repos = ["/home/mathew/Projects/StormDevelopments/storm-pulse", "/home/mathew/Projects/StormDevelopments/website"]
+author = "auto"                    # or hardcode an email
+journal_dir = "journal"            # daily/ and weekly/ entries land under here
+state = "git-recap.state.json"     # per-repo commit watermarks (machine-written)
+first_run_days = 7                 # window for a repo's very first daily
 
 # Example config for the doc-drift engine. Run it whenever you like:
 #     python3 -m gooseloop run -e engines.doc_drift

@@ -120,8 +120,11 @@ def test_annotate_records_the_session_id_in_place(tmp_path):
 
 
 def test_concurrent_acquires_exactly_one_wins(tmp_path):
-    """All contenders share this process's (live) pid, so every loser
-    must refuse — the O_EXCL window can never admit two winners."""
+    """All contenders share this process's (live) pid, so every loser must
+    refuse. Regression 2026-07-13: the original create-then-write let a
+    loser read the winner's still-empty lock file, judge it corrupt, and
+    unlink a LIVE lock — two winners at 16 threads. Creation is now atomic
+    with content (temp + hard link), so the empty-file window is gone."""
     def attempt(i: int) -> bool:
         lock = RunLock(tmp_path)
         try:
@@ -130,9 +133,11 @@ def test_concurrent_acquires_exactly_one_wins(tmp_path):
         except RunLockHeldError:
             return False
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(pool.map(attempt, range(16)))
-    assert results.count(True) == 1
+    for round_no in range(10):
+        (tmp_path / "run.lock").unlink(missing_ok=True)
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            results = list(pool.map(attempt, range(32)))
+        assert results.count(True) == 1, f"round {round_no}: {results.count(True)} winners"
 
 
 # ---- integration: begin_loop -----------------------------------------
@@ -248,3 +253,20 @@ def test_session_meta_records_the_engine_module(tmp_path, patched_goose):
     meta = json.loads((result["session_dir"] / "session.meta.json").read_text())
     assert meta["engine"] == "tiny"
     assert meta["engine_module"] == type(engine).__module__
+
+
+def test_explicit_engine_module_wins_over_class_module(tmp_path, patched_goose):
+    """The CLI passes the RESOLVED module (engines.hello_world); the class's
+    own __module__ (engines.hello_world.engine) is only the library-caller
+    fallback. Caught live: the first dashboard-started run recorded the
+    submodule and every consumer displaying the short name showed 'engine'."""
+    engine = _LockPeekingEngine(tmp_path / RUN_LOCK_FILENAME)
+    config = LooperConfig.load(anchor=tmp_path, warn_on_missing=False)
+    looper = GooseLooper(
+        engine=engine, environment=_TinyEnv(), config=config,
+        review_only=True, save=True, engine_module="engines.hello_world",
+    )
+    result = looper.begin_loop()
+    assert engine.peeked["engine"] == "engines.hello_world"
+    meta = json.loads((result["session_dir"] / "session.meta.json").read_text())
+    assert meta["engine_module"] == "engines.hello_world"

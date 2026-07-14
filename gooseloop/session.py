@@ -43,6 +43,25 @@ def new_session(sessions_dir: Path, model: str, engine_name: str,
     return session_dir
 
 
+def record_base_env(session_dir: Path, base_env: dict[str, str]) -> None:
+    """Add the session-constant base env to session.meta.json, once.
+
+    Per-phase telemetry events (ADR 0012) record only the env injected FOR
+    that phase; the constant half of the dimensionality lives here so no
+    key is lost and no event repeats identical values. Values are capped —
+    a base env entry is a path or a small setting, not a document."""
+    meta_path = session_dir / "session.meta.json"
+    try:
+        meta = json.loads(meta_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    meta["base_env"] = {
+        k: (v if len(v) <= 500 else v[:500] + "…") for k, v in base_env.items()
+    }
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=2)
+
+
 def log_step(session_dir: Path, message: str) -> None:
     """Append a timestamped line to session.log."""
     ts = datetime.now(timezone.utc).isoformat()

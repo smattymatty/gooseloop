@@ -52,6 +52,18 @@ class Engine(ABC):
         may be empty.
         """
 
+    def injected_env(self) -> dict[str, str]:
+        """Env vars this engine injects when BUILDING phases — per routing
+        entry or per body phase — which therefore never appear in the
+        static env scope. Maps var name -> one-line description.
+
+        Declaring them is what keeps preview tooling honest (PROTOCOL §7
+        introspection): an `env_file:CONTEXT_FILE` source whose var is
+        declared here previews as "injected per phase by the engine"
+        instead of a false "unset" failure. doc_drift's per-pair bundle
+        path is the motivating case."""
+        return {}
+
     def base_env(self) -> dict[str, str]:
         """Engine-only env additions. Environment.env_vars() covers paths."""
         return {}
