@@ -21,10 +21,11 @@ from gooseloop.extract import (
     DELIVERABLE_START,
     extract_json_with_provenance,
 )
-from gooseloop.looper import _params_to_env
+from gooseloop.looper import _params_to_env, _review_output_valid
 from gooseloop.protocol import (
     DEFAULTED_LIST_KEYS,
     PROTOCOL_VERSION,
+    REVIEW_OUTPUT_CONTRACT,
     REQUIRED_KEYS,
     ReviewStatus,
     validate_review,
@@ -77,6 +78,34 @@ def test_schema_block_operator_action_requires_action_and_why(schema_example):
 def test_doc_names_the_exact_sentinel_markers(protocol_text):
     assert DELIVERABLE_START in protocol_text
     assert DELIVERABLE_END in protocol_text
+
+
+def test_framework_review_contract_repeats_exact_markers_and_full_schema():
+    """Every review receives this even when an engine recipe drifts."""
+    assert REVIEW_OUTPUT_CONTRACT.count(DELIVERABLE_START) >= 2
+    assert REVIEW_OUTPUT_CONTRACT.count(DELIVERABLE_END) >= 2
+    for key in (*REQUIRED_KEYS, *DEFAULTED_LIST_KEYS):
+        assert f'"{key}"' in REVIEW_OUTPUT_CONTRACT
+
+
+def test_default_review_retry_gate_requires_canonical_valid_output():
+    complete = {
+        "protocol_version": "1.0",
+        "status": "done",
+        "summary": "nothing to route",
+        "insights": [],
+        "routing": [],
+        "operator_actions": [],
+    }
+    canonical = (
+        f"{DELIVERABLE_START}\n{json.dumps(complete)}\n{DELIVERABLE_END}"
+    )
+    assert _review_output_valid(canonical)
+    assert not _review_output_valid(f"```json\n{json.dumps(complete)}\n```")
+    incomplete = {"protocol_version": "1.0", "status": "done"}
+    assert not _review_output_valid(
+        f"{DELIVERABLE_START}\n{json.dumps(incomplete)}\n{DELIVERABLE_END}"
+    )
 
 
 def test_documented_framing_round_trips_through_extract_and_validate():

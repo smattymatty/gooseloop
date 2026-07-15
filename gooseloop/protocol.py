@@ -28,6 +28,73 @@ PROTOCOL_VERSION = "1.0"
 PROTOCOL_MAJOR = 1
 
 
+# Appended by the framework to EVERY review prompt. Engine recipes still state
+# their domain routing rules, but correctness of the transport envelope must not
+# depend on every private recipe copying the protocol perfectly. Keeping the
+# literal markers and full schema here also gives retry validation one stable
+# contract to enforce.
+REVIEW_OUTPUT_CONTRACT = """\
+FRAMEWORK REVIEW OUTPUT CONTRACT (binding; follow this after all domain rules):
+
+Your final assistant message MUST end with exactly one JSON object between these
+literal marker lines. Copy the markers character-for-character. Do not use a
+Markdown fence, PROTOCOL markers, renamed markers, or prose after the closing
+marker.
+
+<<<DELIVERABLE_JSON>>>
+{
+  "protocol_version": "1.0",
+  "status": "done",
+  "summary": "one-paragraph operator-facing state",
+  "insights": [],
+  "routing": [],
+  "operator_actions": []
+}
+<<<END_DELIVERABLE>>>
+
+All six keys shown above must be present. status is exactly one of "done",
+"partial", or "error". routing is always a JSON list, empty when the domain
+rules route no body work. Each routed item has recipe, params, and reason.
+
+A populated example — copy this shape when the domain rules DO route body work:
+
+<<<DELIVERABLE_JSON>>>
+{
+  "protocol_version": "1.0",
+  "status": "done",
+  "summary": "one-paragraph operator-facing state",
+  "insights": ["a short observation the operator should see"],
+  "routing": [
+    {"recipe": "some-body-recipe.yaml", "params": {"id": "unit-1"}, "reason": "why this unit needs a body phase"}
+  ],
+  "operator_actions": [{"action": "a decision only a human can make", "why": "the context for that decision"}]
+}
+<<<END_DELIVERABLE>>>
+
+End your final message in this exact shape:
+<<<DELIVERABLE_JSON>>>
+{ ...the complete six-key JSON object... }
+<<<END_DELIVERABLE>>>
+"""
+
+
+def review_repair_prompt(error: str) -> str:
+    """Feedback appended to the output contract when a review is rejected, so
+    the model corrects with the EXACT reason instead of repeating the mistake.
+    Drives the framework's validate-and-repair loop (looper._run_review): a
+    static contract a weak model ignored once, plus the specific rejection, is
+    what turns a one-shot failure into a corrected pass."""
+    return (
+        "YOUR PREVIOUS REVIEW OUTPUT WAS REJECTED and must be re-emitted.\n"
+        f"Rejection reason: {error}\n\n"
+        "Do not apologise or explain. Emit ONE JSON object with the six keys, "
+        "between the exact literal markers <<<DELIVERABLE_JSON>>> and "
+        "<<<END_DELIVERABLE>>> — no Markdown fence, no PROTOCOL markers, no "
+        "renamed markers, no prose after the closing marker. Do not rename or "
+        "add keys, and do not invent your own schema."
+    )
+
+
 class RoutingEntry(TypedDict, total=False):
     """One entry in the review's routing[] list.
 
@@ -218,5 +285,4 @@ def _check_protocol_version(declared: str) -> None:
             f"review declares protocol_version {declared!r} (major {major}); "
             f"framework supports major {PROTOCOL_MAJOR} only"
         )
-
 

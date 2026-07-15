@@ -39,10 +39,12 @@ from .phase import Context, Phase, Pipeline
 from .predicates import file_nonempty
 from .protocol import (
     PROTOCOL_VERSION,
+    REVIEW_OUTPUT_CONTRACT,
     OperatorAction,
     ProtocolVersionError,
     ReviewOutput,
     RoutingEntry,
+    review_repair_prompt,
     validate_review,
 )
 from .recipe_merge import load_layered_recipe
@@ -50,7 +52,7 @@ from . import telemetry
 from .guardrails import scan_and_redact
 from .runlock import RunLock
 from .session import log_step, new_session, record_base_env
-from .extract import extract_json_with_provenance
+from .extract import Extracted, extract_json_with_provenance
 from .text import Color, banner, colored
 
 
@@ -372,42 +374,75 @@ class GooseLooper:
         # Review's planned total is structurally unknown: routing[] hasn't
         # run yet. Display "?" instead of a misleading partial count.
         self._announce(review.name, total="?")
-        # Wrap the review's success_predicate so the retry loop fails any
-        # attempt that didn't emit parseable wrapped JSON. Without this,
-        # a mid-stream truncation (e.g. provider stream decode error) gets
-        # accepted as "success" by the default transient-error check, the
-        # downstream parse fails, and retries are off the table by then.
-        # Engines that explicitly set their own predicate keep it.
+        # Who owns "is this review valid?" — the feedback loop below, or the
+        # goose-level guard predicate. They must not both, because the guard
+        # (_review_output_valid) blind-retries the SAME prompt and then RAISES
+        # on exhaustion, so _invoke_recipe returns None before the feedback loop
+        # ever sees the bad output. So: with repair enabled, the loop owns it —
+        # it re-prompts with the exact reason, which a weak model acts on. With
+        # repair OFF, keep the guard: fail an unparseable/invalid attempt so
+        # goose retries it (the pre-repair behavior, e.g. against a stream
+        # truncation). Engines that set their own predicate always keep it.
+        repair_enabled = self.config.retry.review_repair_attempts > 0
         review_with_guard = (
-            review if review.success_predicate is not None
-            else dataclasses.replace(review, success_predicate=_review_output_parseable)
+            review
+            if review.success_predicate is not None or repair_enabled
+            else dataclasses.replace(review, success_predicate=_review_output_valid)
         )
         started = datetime.now(timezone.utc).isoformat()
         t0 = time.perf_counter()
-        output = self._invoke_recipe(review_with_guard, ctx, overlays=self.review_overlays)
-        if output is None:
-            self._emit_phase_event(
-                ctx, review, kind="review", status="failed", started=started, t0=t0,
-                error=self._invoke_error,
-                transcript=self._invoke_stats.get("last_output"),
-            )
-            return 0, False, "error", None
 
-        extracted = extract_json_with_provenance(output)
-        if extracted is None:
-            print(colored(
-                "Review did not emit recognisable wrapped JSON; cannot parse.",
-                Color.RED,
-            ), file=sys.stderr)
+        # Validate-and-repair loop. A review that fails to parse or fails the
+        # schema is re-prompted with the EXACT rejection reason appended to the
+        # output contract, not silently aborted. Weak models routinely emit the
+        # wrong sentinels or an invented schema on the first shot and correct
+        # once told precisely what was wrong. Total tries = 1 + repair attempts.
+        attempts = 1 + max(0, self.config.retry.review_repair_attempts)
+        suffix = REVIEW_OUTPUT_CONTRACT
+        review_output: ReviewOutput | None = None
+        extracted: Extracted | None = None
+        output: str | None = None
+        calls = 0
+        last_error = "review produced no valid output"
+        for attempt in range(attempts):
+            output = self._invoke_recipe(
+                review_with_guard, ctx,
+                overlays=self.review_overlays, prompt_suffix=suffix,
+            )
+            calls += 1
+            if output is None:
+                # The goose call itself failed (exhausted transient retries);
+                # re-prompting a dead invocation buys nothing.
+                self._emit_phase_event(
+                    ctx, review, kind="review", status="failed", started=started, t0=t0,
+                    error=self._invoke_error,
+                    transcript=self._invoke_stats.get("last_output"),
+                )
+                return calls, False, "error", None
+
+            review_output, last_error, extracted = self._parse_review(output)
+            if review_output is not None:
+                break
+
             if ctx.session_dir:
-                log_step(ctx.session_dir, "review: no wrapped JSON found by any recognizer")
+                log_step(ctx.session_dir, f"review: rejected ({last_error})")
+            if attempt + 1 < attempts:
+                if ctx.session_dir:
+                    log_step(ctx.session_dir,
+                             f"review: repairing with feedback (attempt {attempt + 2}/{attempts})")
+                suffix = f"{REVIEW_OUTPUT_CONTRACT}\n\n{review_repair_prompt(last_error)}"
+
+        if review_output is None:
+            print(colored(
+                f"Review invalid after {attempts} attempt(s): {last_error}", Color.RED,
+            ), file=sys.stderr)
             self._emit_phase_event(
                 ctx, review, kind="review", status="failed", started=started, t0=t0,
-                error="no wrapped JSON found by any recognizer", transcript=output,
+                error=last_error, transcript=output,
             )
-            return 1, False, "error", None
+            return calls, False, "error", None
 
-        if not extracted.is_canonical:
+        if extracted is not None and not extracted.is_canonical:
             msg = (
                 f"review parsed via {extracted.recognizer} (non-canonical wrapper). "
                 f"Tighten the review recipe to use <<<DELIVERABLE_JSON>>> / "
@@ -422,27 +457,6 @@ class GooseLooper:
                     f"weaker models will drift further if the recipe stays ambiguous",
                 recognizer=extracted.recognizer,
             )
-
-        try:
-            review_output = validate_review(extracted.payload)
-        except ProtocolVersionError as e:
-            print(colored(f"Review protocol mismatch: {e}", Color.RED), file=sys.stderr)
-            if ctx.session_dir:
-                log_step(ctx.session_dir, f"review: protocol mismatch ({e})")
-            self._emit_phase_event(
-                ctx, review, kind="review", status="failed", started=started, t0=t0,
-                error=f"protocol mismatch: {e}", transcript=output,
-            )
-            return 1, False, "error", None
-        except ValueError as e:
-            print(colored(f"Review schema invalid: {e}", Color.RED), file=sys.stderr)
-            if ctx.session_dir:
-                log_step(ctx.session_dir, f"review: schema invalid ({e})")
-            self._emit_phase_event(
-                ctx, review, kind="review", status="failed", started=started, t0=t0,
-                error=f"schema invalid: {e}", transcript=output,
-            )
-            return 1, False, "error", None
 
         # ADR 0013: routing[] is the plan of record for the WHOLE pass.
         # Engine-built body phases are appended by the framework with
@@ -501,7 +515,23 @@ class GooseLooper:
             transcript=output,
             actions=list(ctx.artifacts.get("operator_actions", [])),
         )
-        return 1, True, status, review_output
+        return calls, True, status, review_output
+
+    def _parse_review(self, output: str) -> tuple[ReviewOutput | None, str, Extracted | None]:
+        """Extract + validate one review output. Pure (no logging/emit): returns
+        (review_output or None, rejection_reason, extracted). rejection_reason is
+        the exact text the repair loop feeds back to the model; extracted carries
+        the wrapper provenance for the non-canonical warning on the winning try."""
+        extracted = extract_json_with_provenance(output)
+        if extracted is None:
+            return None, ("no JSON found between <<<DELIVERABLE_JSON>>> and "
+                          "<<<END_DELIVERABLE>>> (or any recognised wrapper)"), None
+        try:
+            return validate_review(extracted.payload), "", extracted
+        except ProtocolVersionError as e:
+            return None, f"protocol version mismatch: {e}", extracted
+        except ValueError as e:
+            return None, f"schema invalid: {e}", extracted
 
     def _build_body_phases(self, routing: list[RoutingEntry]) -> list[Phase]:
         """Build body Phases from review routing entries via BranchPolicy.
@@ -819,7 +849,8 @@ class GooseLooper:
         return 1, True
 
     def _invoke_recipe(self, phase: Phase, ctx: Context, *,
-                       overlays: list[Path] | None = None) -> str | None:
+                       overlays: list[Path] | None = None,
+                       prompt_suffix: str = "") -> str | None:
         phase_env = phase.build_env(ctx)
         extra_env = {**ctx.base_env, **phase_env}
         # Telemetry side-channel (ADR 0012): what THIS invocation injected
@@ -835,6 +866,7 @@ class GooseLooper:
                 environment=self.environment,
                 local_path=_local_overlay_for(Path(phase.recipe_path)),
                 overlay_paths=overlays or [],
+                prompt_suffix=prompt_suffix,
             ) as effective_path:
                 try:
                     self._invoke_prompt = Path(effective_path).read_text()
@@ -917,16 +949,22 @@ class GooseLooper:
         return f"{self.engine.recipes_dir()}/{recipe}.yaml"
 
 
-def _review_output_parseable(output: str) -> bool:
-    """Default review success_predicate: at least extract_json must succeed.
+def _review_output_valid(output: str) -> bool:
+    """Default review retry gate: canonical framing plus the full schema.
 
-    Catches mid-stream truncation (provider decode error after partial
-    output) and other "looks fine to goose but doesn't parse" failures.
-    Validation of required keys + status enum + protocol version happens
-    in validate_review after extraction; this predicate's only job is
-    "is there enough output to try."
+    A fallback Markdown fence or a JSON object missing load-bearing keys is not
+    a successful model attempt. Returning False lets the existing retry loop try
+    again instead of accepting a superficially parseable answer and failing only
+    after retries are no longer available.
     """
-    return extract_json_with_provenance(output) is not None
+    extracted = extract_json_with_provenance(output)
+    if extracted is None or not extracted.is_canonical:
+        return False
+    try:
+        validate_review(extracted.payload)
+    except (ProtocolVersionError, ValueError):
+        return False
+    return True
 
 
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")

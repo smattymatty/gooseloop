@@ -171,7 +171,9 @@ def test_unparseable_review_records_failed_with_transcript(tmp_path, monkeypatch
     })
     events = telemetry.read_phase_events(session_dir)
     assert events[0]["status"] == "failed"
-    assert "wrapped JSON" in events[0]["error"]
+    # After the validate-and-repair loop exhausts (default: initial + 1 repair),
+    # the recorded error names the sentinel the model failed to produce.
+    assert "DELIVERABLE_JSON" in events[0]["error"]
     assert (session_dir / events[0]["transcript"]).read_text() == "no sentinels here at all"
 
 
@@ -392,6 +394,39 @@ def test_retry_attempts_persist_their_transcripts(tmp_path, monkeypatch):
     assert "server error" in (session_dir / log[0]["transcript"]).read_text()
     assert log[1]["transcript"] == review["transcript"]
     assert "output" not in log[0]  # inline text never lands in the event
+
+
+def test_review_repair_recovers_on_second_attempt(tmp_path, monkeypatch):
+    """The validate-and-repair loop: a first review that invents its own
+    sentinels + schema (the deepseek-v4-flash failure) is re-prompted and the
+    model corrects, so the pass recovers instead of aborting."""
+    review_calls = {"n": 0}
+
+    def run(recipe_path, model, extra_env=None, *, stats=None, **kwargs):
+        if stats is not None:
+            stats["attempts"] = 1
+        if "review.yaml" in recipe_path:
+            review_calls["n"] += 1
+            if review_calls["n"] == 1:  # invented markers + wrong schema
+                return ('<<<PROTOCOL_1.0>>>\n{"journey_id": "x", "status": "passed"}'
+                        '\n<<<END_PROTOCOL_1.0>>>')
+            return REVIEW_OUTPUT  # the repair attempt gets it right
+        if "greet" in recipe_path:
+            return GREET_OUTPUT
+        if "summary.yaml" in recipe_path:
+            return SUMMARY_OUTPUT
+        return ""
+
+    _patch(monkeypatch, run)
+    looper = GooseLooper(
+        engine=_TelemetryEngine(), environment=_Env(),
+        config=LooperConfig.load(anchor=tmp_path, warn_on_missing=False),
+        save=True,
+    )
+    session_dir = Path(looper.begin_loop()["session_dir"])
+    review = telemetry.read_phase_events(session_dir)[0]
+    assert review_calls["n"] == 2          # initial + one repair, not an abort
+    assert review["status"] == "ok"        # recovered: the pass did not fail
 
 
 def test_secret_in_a_retry_attempt_is_redacted_flagged_and_raised(tmp_path, monkeypatch):

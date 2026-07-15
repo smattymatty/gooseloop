@@ -73,6 +73,15 @@ The review's final assistant message must wrap the JSON in sentinel markers:
 The framework's `extract_json` parses the last occurrence. Anything outside the
 sentinels is narration and ignored.
 
+The looper appends this framing contract and the complete six-key schema after
+every engine review prompt. Engine recipes still own their domain-specific
+routing instructions and should show the canonical output shape, but a missing
+or stale recipe reminder cannot remove the framework instruction. The default
+review retry gate requires both canonical sentinel framing and a schema-valid
+payload; fallback Markdown fences, renamed markers, or missing required keys are
+failed attempts eligible for retry rather than successful attempts that break
+later during routing.
+
 ### status semantics
 
 - `"done"` — review is complete; framework proceeds to body.

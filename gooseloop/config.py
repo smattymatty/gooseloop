@@ -33,6 +33,7 @@ DEFAULTS: dict[str, Any] = {
         "retry": {
             "max_retries": 6,
             "base_delay": 5,
+            "review_repair_attempts": 1,
         },
     },
 }
@@ -42,6 +43,11 @@ DEFAULTS: dict[str, Any] = {
 class RetrySettings:
     max_retries: int = 6
     base_delay: int = 5
+    # Extra review attempts when the output fails to parse or fails the schema,
+    # each re-prompted with the exact rejection reason (the validate-and-repair
+    # loop). 0 disables repair (one shot, then abort). Weak models routinely
+    # need one repair to correct a bad sentinel or an invented schema.
+    review_repair_attempts: int = 1
 
 
 @dataclass
@@ -106,6 +112,7 @@ class LooperConfig:
             retry=RetrySettings(
                 max_retries=int(section["retry"]["max_retries"]),
                 base_delay=int(section["retry"]["base_delay"]),
+                review_repair_attempts=int(section["retry"].get("review_repair_attempts", 1)),
             ),
             anchor=anchor,
         )

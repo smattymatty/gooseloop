@@ -10,5 +10,5 @@ type = layers
 layers =
     gooseloop.__main__ : gooseloop.looper
     gooseloop.goose : gooseloop.introspect : gooseloop.context_prepend : gooseloop.predicates : gooseloop.footer
-    gooseloop.engine : gooseloop.phase : gooseloop.branch_policy : gooseloop.environment : gooseloop.contrib
+    gooseloop.engine : gooseloop.phase : gooseloop.branch_policy : gooseloop.environment
     gooseloop.extract : gooseloop.session : gooseloop.config : gooseloop.recipe_merge : gooseloop.protocol : gooseloop.artifact : gooseloop.toolkit : gooseloop.text

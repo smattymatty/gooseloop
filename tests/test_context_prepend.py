@@ -421,6 +421,29 @@ def test_prepared_recipe_yields_rendered_file_and_cleans_up(tmp_path):
     assert base.exists()  # the source recipe is never touched
 
 
+def test_prepared_recipe_appends_framework_prompt_suffix_last(tmp_path):
+    """Framework-owned phase contracts follow engine prose and pasted data."""
+    base = _write_yaml(
+        tmp_path / "review.yaml",
+        {
+            "prompt": "domain rule",
+            "context": [{"label": "DATA", "source": "file:${INPUT}"}],
+        },
+    )
+    source = tmp_path / "input.txt"
+    source.write_text("untrusted input")
+    suffix = "FRAMEWORK CONTRACT\n<<<DELIVERABLE_JSON>>>"
+    with prepared_recipe(
+        base,
+        {"INPUT": str(source)},
+        prompt_suffix=suffix,
+    ) as effective:
+        prompt = _read(effective)["prompt"]
+    assert "untrusted input" in prompt
+    assert prompt.index("domain rule") < prompt.index("FRAMEWORK CONTRACT")
+    assert prompt.rstrip().endswith("<<<DELIVERABLE_JSON>>>")
+
+
 def test_prepared_recipe_keeps_rendered_file_when_asked(tmp_path, monkeypatch):
     monkeypatch.setenv("GOOSER_KEEP_RENDERED", "1")
     base = _write_yaml(tmp_path / "review.yaml", {"prompt": "keep me"})

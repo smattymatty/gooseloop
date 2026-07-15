@@ -19,6 +19,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Review output is now a framework-owned boundary rather than recipe folklore.
+  Gooseloop appends the canonical six-key protocol and exact sentinel markers
+  after every review prompt, and the default retry gate accepts only canonically
+  wrapped, schema-valid reviews. Markdown-fenced JSON, renamed markers, and
+  missing `summary`/`routing` now trigger a model retry instead of surviving the
+  retry loop and failing afterward. The import-linter contract also drops the
+  stale `gooseloop.contrib` layer removed by ADR 0017, restoring a green
+  `make check`.
+
+- Reviews that fail to parse or fail the schema are now REPAIRED, not aborted:
+  the framework re-prompts (configurable via `[gooseloop.retry]
+  review_repair_attempts`, default 1) with the exact rejection reason appended
+  to the output contract, so a weak model that invents sentinels or a schema on
+  the first shot corrects when told precisely what was wrong. With repair
+  enabled the feedback loop owns review validity — the blind
+  `_review_output_valid` gate is NOT installed in that mode, because it retries
+  the same prompt and raises on exhaustion before the feedback loop ever sees
+  the bad output. Repair off (`review_repair_attempts = 0`) keeps the prior
+  blind-retry gate.
+
 - doc-drift triage no longer trusts mtime after a pair has history. The
   "derived at least as recent as the canonical" shortcut fires only on
   first sight; once state exists, any token change from the last verified

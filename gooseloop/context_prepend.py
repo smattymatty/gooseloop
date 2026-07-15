@@ -302,6 +302,7 @@ def render_recipe_with_context(
     extra_env: dict[str, str],
     *,
     environment: Any = None,
+    prompt_suffix: str = "",
 ) -> str:
     """Resolve a recipe's context: block; write a rendered temp file.
 
@@ -338,6 +339,15 @@ def render_recipe_with_context(
     else:
         doc = substitute_env_in_prompt(doc, env)
 
+    if prompt_suffix:
+        prompt = doc.get("prompt", "")
+        if not isinstance(prompt, str):
+            prompt = str(prompt)
+        doc = {
+            **doc,
+            "prompt": prompt.rstrip() + "\n\n" + prompt_suffix.strip() + "\n",
+        }
+
     return _write_rendered(doc)
 
 
@@ -347,7 +357,8 @@ def prepared_recipe(recipe_path: Path,
                     *,
                     environment: Any = None,
                     local_path: Path | None = None,
-                    overlay_paths: list[Path] | None = None) -> Iterator[str]:
+                    overlay_paths: list[Path] | None = None,
+                    prompt_suffix: str = "") -> Iterator[str]:
     """Yield the effective recipe path: overlay-merged + context-rendered.
 
     Steps:
@@ -362,7 +373,12 @@ def prepared_recipe(recipe_path: Path,
         local_path=local_path,
         overlay_paths=overlay_paths,
     )
-    rendered = render_recipe_with_context(merged, extra_env or {}, environment=environment)
+    rendered = render_recipe_with_context(
+        merged,
+        extra_env or {},
+        environment=environment,
+        prompt_suffix=prompt_suffix,
+    )
     try:
         yield rendered
     finally:
