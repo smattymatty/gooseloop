@@ -1,7 +1,15 @@
 # ADR 0002 — Decorator-only engine registry
 
-**Status:** Accepted (2026-05-28)
+**Status:** Superseded by [ADR 0009](0009-default-engine-and-short-name-resolution.md) (2026-07-13)
 **Context:** GooseLooper architectural refactor — engine discovery
+
+> **Superseded.** The `@register_engine` decorator and its runtime registry
+> described below never shipped. The framework instead reads the engine class
+> from the module named by `default_engine` in `gooseloop.toml` (or a short
+> name resolved against the loop root); there is no decorator, no
+> self-registration, and no registry dict. See `gooseloop/engine.py` and
+> ADR 0009 for the live model. Read this for the reasoning that was abandoned,
+> not for how engines are discovered today.
 
 ## Context
 
