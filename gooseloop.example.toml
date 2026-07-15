@@ -1,5 +1,10 @@
-# gooseloop project config — points at the hello-world reference engine.
-# A consuming project replaces default_engine with their own.
+# gooseloop project config — the committed TEMPLATE.
+#
+# First time:  cp gooseloop.example.toml gooseloop.toml   (gooseloop.toml is
+# gitignored; it points at your own repos and carries your author identity).
+#
+# Points at the hello-world reference engine by default. A consuming project
+# replaces default_engine with their own.
 
 [gooseloop]
 default_model = "deepseek/deepseek-v4-flash"
@@ -19,13 +24,16 @@ base_delay = 5
 [hello_world]
 names = "names.txt"
 greetings_dir = "greetings"
-                   
-# Example config for the git-recap engine. Uncomment and edit, then run:
+
+# Example config for the git-recap engine. Edit the paths, then run:
 #     python3 -m gooseloop run -e engines.git_recap
 
 [git_recap]
-repos = ["/home/mathew/Projects/StormDevelopments/storm-pulse", "/home/mathew/Projects/StormDevelopments/website"]
-author = "auto"                    # or hardcode an email
+repos = ["/path/to/repo1", "/path/to/repo2"]
+# "auto" reads your git user.email. Hardcode the email instead when running
+# somewhere git can't read your host config (a container, CI) — "auto" there
+# resolves to nothing and the author filter silently matches zero commits.
+author = "auto"                    # or "you@example.com"
 journal_dir = "journal"            # daily/ and weekly/ entries land under here
 state = "git-recap.state.json"     # per-repo commit watermarks (machine-written)
 first_run_days = 7                 # window for a repo's very first daily
@@ -44,3 +52,6 @@ first_run_days = 7                 # window for a repo's very first daily
 map = "doc-map.toml"               # the canonical→derived map (gitignored; copy the .example)
 state = "doc-map.state.json"       # the engine's own cross-run memory (machine-written)
 drafts_dir = "doc-drift-drafts"    # where per-pair patch drafts land
+# Doc-root discovery: dirs to scan for markdown areas no collection glob covers.
+# Empty/absent = off. Discovery never roams outside these. Relative to the map.
+discovery_roots = ["/path/to/docs-repo"]

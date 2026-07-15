@@ -33,6 +33,11 @@ doc-map.state.json
 doc-map.toml
 !doc-map.example.toml
 
+# Project config: the operator's real config points at their own repos and
+# carries their author identity. The committed template is gooseloop.example.toml.
+gooseloop.toml
+!gooseloop.example.toml
+
 # Recipe overlays + goose state.
 *.local.yaml
 .goose/
