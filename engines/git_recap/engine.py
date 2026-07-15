@@ -32,7 +32,11 @@ Cross-run state (git-recap.state.json, machine-written):
 
 A daily covers exactly watermark..HEAD per repo: skip three days and the
 gap is still covered; run twice and only the new commits are added. The
-first run ever falls back to `first_run_days`.
+first run (no watermark yet) bounds its window by where the journal left
+off — commits since the most recent existing daily's date (that day
+included, fail-safe toward keeping commits) — so a repo whose history is
+already partly journaled never gets its old commits re-scooped. Only a
+truly empty journal falls back to `first_run_days`.
 """
 
 from __future__ import annotations
@@ -180,10 +184,30 @@ class GitRecapEnvironment(Environment):
                 ) or "auto"
         return self._resolved_author
 
+    def _most_recent_daily_date(self) -> str | None:
+        """The date of the newest daily on disk, or None if the journal is
+        empty. Filenames are ISO dates, so lexical max is chronological."""
+        if not self.daily_dir.is_dir():
+            return None
+        stems = sorted(p.stem for p in self.daily_dir.glob("*.md"))
+        return stems[-1] if stems else None
+
     def _fresh_range(self, repo: Path) -> list[str]:
         mark = self.watermarks().get(str(repo))
         if mark and self._git(repo, "cat-file", "-t", mark) == "commit":
             return [f"{mark}..HEAD"]
+        # First run (no watermark): bound the window by where the journal
+        # left off, not a blind first_run_days dragnet — otherwise a repo
+        # whose history is already partly journaled gets its old commits
+        # re-scooped and double-counted. The boundary day is INCLUDED
+        # (--since=<date> is that day's 00:00), fail-safe toward KEEP: a
+        # commit made after that day's daily ran is never silently lost,
+        # and the one day of overlap is deduped by the body model, which
+        # gets that daily as no-repeat context. Only a truly empty journal
+        # falls back to first_run_days.
+        last_daily = self._most_recent_daily_date()
+        if last_daily:
+            return [f"--since={last_daily} 00:00"]
         return [f"--since={self.first_run_days} days ago"]
 
     def fresh_commit_shas(self, repo: Path) -> list[str]:
@@ -324,6 +348,17 @@ class GitRecapEngine(Engine):
 
     def recipes_dir(self) -> str:
         return str(_HERE / "recipes")
+
+    def planned_bound(self, ctx: Context) -> int | None:
+        """Max body phases this pass could route, known before the model
+        routes: a daily iff there are fresh commits, a weekly iff one is due.
+        The model proposes; the skip_when seatbelts can only remove from this
+        set, never add — so it's a true ceiling. Lets the dash show [1/<=N]
+        instead of [1/?] for this model-routed engine."""
+        env = ctx.environment
+        if not isinstance(env, GitRecapEnvironment):
+            return None
+        return (1 if env.total_fresh() > 0 else 0) + (1 if env.weekly_due() else 0)
 
     # -- precheck: fail loud, fail early ---------------------------------
 

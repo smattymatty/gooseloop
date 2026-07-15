@@ -211,6 +211,18 @@ class GooseLooper:
         self._step = 0
         self._planned = 1 + len(pipeline.body) + (1 if pipeline.summary else 0)
 
+        # The review banner runs before routing[] spawns its body children, so
+        # its total is normally unknowable ("?"). A model-routed engine that
+        # can bound its routing deterministically declares that ceiling here,
+        # turning "?" into "<=N" (ADR: engine-declared planned bound).
+        bound = self.engine.planned_bound(ctx)
+        if bound is None:
+            self._review_total = "?"
+        elif bound <= 0:
+            self._review_total = str(self._planned)  # nothing to route: exact
+        else:
+            self._review_total = f"<={self._planned + bound}"
+
         body_queue: deque[Phase] = deque()
 
         # --- 1. review ------------------------------------------------
@@ -370,8 +382,9 @@ class GooseLooper:
         Returns (goose_calls, succeeded, status, parsed_output).
         """
         # Review's planned total is structurally unknown: routing[] hasn't
-        # run yet. Display "?" instead of a misleading partial count.
-        self._announce(review.name, total="?")
+        # run yet. Display the engine's declared bound ("<=N") when it has one,
+        # else "?" instead of a misleading partial count.
+        self._announce(review.name, total=self._review_total)
         # Wrap the review's success_predicate so the retry loop fails any
         # attempt that didn't emit parseable wrapped JSON. Without this,
         # a mid-stream truncation (e.g. provider stream decode error) gets

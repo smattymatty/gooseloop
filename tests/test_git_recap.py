@@ -9,6 +9,7 @@ plumbing); no goose calls anywhere.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from datetime import date
 from pathlib import Path
@@ -39,6 +40,20 @@ def _commit(repo: Path, name: str) -> str:
     (repo / name).write_text(name)
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", f"add {name}"], check=True)
+    out = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                         capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
+def _commit_dated(repo: Path, name: str, iso_date: str) -> str:
+    """Commit with a fixed author+committer date, so first-run window
+    tests don't depend on wall-clock 'now'."""
+    (repo / name).write_text(name)
+    stamp = f"{iso_date}T12:00:00"
+    env = {**os.environ, "GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp}
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", f"add {name}"],
+                   check=True, env=env)
     out = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
                          capture_output=True, text=True, check=True)
     return out.stdout.strip()
@@ -83,6 +98,61 @@ def test_first_run_falls_back_to_window(tmp_path):
     sha = _commit(repo, "a.txt")
     env = _env(tmp_path, [repo])
     assert env.fresh_commit_shas(repo) == [sha]
+
+
+def test_first_run_bounds_window_by_most_recent_daily(tmp_path):
+    """No watermark, but a daily already exists: the first-run window
+    starts at that daily's date (inclusive), so commits it already
+    covered are not re-scooped — but the boundary day and everything
+    after it are kept."""
+    repo = _make_repo(tmp_path / "r1")
+    old = _commit_dated(repo, "old.txt", "2020-01-01")  # before the daily
+    boundary = _commit_dated(repo, "mid.txt", "2020-01-05")  # on the daily's day
+    new = _commit_dated(repo, "new.txt", "2020-01-10")  # after the daily
+    env = _env(tmp_path, [repo])
+    env.daily_dir.mkdir(parents=True)
+    env.daily_path("2020-01-05").write_text("# already journaled\n")
+
+    fresh = set(env.fresh_commit_shas(repo))
+    assert new in fresh          # after the daily — kept
+    assert boundary in fresh     # ON the daily's day — kept (fail-safe)
+    assert old not in fresh      # before the daily — not re-scooped
+
+
+def test_first_run_falls_back_to_window_when_no_daily(tmp_path):
+    """An empty journal (no dailies) still uses first_run_days."""
+    repo = _make_repo(tmp_path / "r1")
+    sha = _commit(repo, "a.txt")
+    env = _env(tmp_path, [repo])
+    assert env.daily_dir.exists() is False
+    assert env.fresh_commit_shas(repo) == [sha]
+
+
+# ---- planned_bound (dash step-count ceiling) -------------------------
+
+
+def test_planned_bound_counts_daily_and_weekly(tmp_path):
+    repo = _make_repo(tmp_path / "r1")
+    _commit(repo, "a.txt")  # fresh commit -> a daily could route
+    env = _env(tmp_path, [repo])
+    engine = GitRecapEngine(env=env)
+    # fresh commits, no weekly due yet -> just the daily
+    assert engine.planned_bound(_ctx(env)) == 1
+    # a daily exists in the closed week -> a weekly is now due too
+    closed = _closed_week()
+    env.daily_dir.mkdir(parents=True, exist_ok=True)
+    env.daily_path(_week_dates(closed)[0]).write_text("# day\n")
+    assert engine.planned_bound(_ctx(env)) == 2
+
+
+def test_planned_bound_zero_when_nothing_to_route(tmp_path):
+    repo = _make_repo(tmp_path / "r1")
+    mark = _commit(repo, "a.txt")
+    env = _env(tmp_path, [repo])
+    env.seen_heads = {str(repo): mark}
+    env.advance_watermarks()  # watermark at HEAD -> no fresh commits
+    engine = GitRecapEngine(env=env)
+    assert engine.planned_bound(_ctx(env)) == 0
 
 
 def test_watermark_bounds_fresh_commits(tmp_path):

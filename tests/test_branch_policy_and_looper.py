@@ -179,6 +179,45 @@ def test_summary_output_written_to_session_dir(tmp_path, patched_looper):
     assert summary_path.read_text() == SUMMARY_OUTPUT
 
 
+def test_planned_bound_shows_ceiling_on_review(tmp_path, patched_looper):
+    """A model-routed engine that declares a planned_bound turns the review
+    banner's [1/?] into [1/<=N] (1 review + 0 static body + 1 summary = 2,
+    plus a bound of 2 = <=4)."""
+    class _BoundedEngine(_RecordingEngine):
+        def planned_bound(self, ctx: Context):
+            return 2
+
+    looper = GooseLooper(
+        engine=_BoundedEngine(), environment=_SilentEnv(),
+        config=_make_config(tmp_path), save=False,
+    )
+    looper.begin_loop()
+    assert looper._review_total == "<=4"
+
+
+def test_no_planned_bound_shows_question_mark(tmp_path, patched_looper):
+    looper = GooseLooper(
+        engine=_RecordingEngine(), environment=_SilentEnv(),
+        config=_make_config(tmp_path), save=False,
+    )
+    looper.begin_loop()
+    assert looper._review_total == "?"
+
+
+def test_planned_bound_zero_shows_exact_total(tmp_path, patched_looper):
+    """bound 0 means nothing will route: show the exact static total, not <=."""
+    class _ZeroBound(_RecordingEngine):
+        def planned_bound(self, ctx: Context):
+            return 0
+
+    looper = GooseLooper(
+        engine=_ZeroBound(), environment=_SilentEnv(),
+        config=_make_config(tmp_path), save=False,
+    )
+    looper.begin_loop()
+    assert looper._review_total == "2"
+
+
 def test_no_summary_md_when_summary_phase_absent(tmp_path, patched_looper):
     """A Pipeline with summary=None (permitted per ADR 0006) writes no
     summary.md — there is nothing to capture."""

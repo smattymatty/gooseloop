@@ -71,6 +71,24 @@ class Engine(ABC):
     def precheck(self, ctx: Context) -> None:
         """Run once before the pipeline. Raise to abort the pass."""
 
+    def planned_bound(self, ctx: Context) -> int | None:
+        """Optional ceiling on the BODY phases this pass may route, known
+        before the review runs.
+
+        For a model-routed engine (routing[] decided by the review model, so
+        pipeline.body is empty at construction), the exact count is unknown
+        until the model responds — the looper shows `[1/?]`. When the maximum
+        is deterministic (git-recap can route at most a daily + a weekly, gated
+        by fresh commits and whether a weekly is due), return it here: the
+        looper shows `[1/<=N]` instead, resolving to the exact count once
+        routing is verified. The seatbelts can only REMOVE from the routed set,
+        never add, so this is a true ceiling.
+
+        Return None (the default) when the count is genuinely unknowable, or
+        for engines whose pipeline.body is already static (their exact count is
+        known without this)."""
+        return None
+
     def recipes_dir(self) -> str:
         """Engine-bundled recipes location, relative to the engine module."""
         return "recipes"
