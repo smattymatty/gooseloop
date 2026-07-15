@@ -15,8 +15,8 @@ Configuration (in gooseloop.toml):
     map = "doc-map.toml"             # canonical→derived map (hand-maintained)
     state = "doc-map.state.json"     # engine's cross-run memory (machine-written)
     drafts_dir = "doc-drift-drafts"  # where per-pair patch drafts land
-    discovery_window_days = 7        # doc-root discovery window; 0 disables.
-                                     # Defaults to [git_recap].window_days.
+    discovery_window_days = 7        # doc-root discovery window in days;
+                                     # 0 disables discovery. Defaults to 7.
     discovery_roots = ["../website"] # dirs discovery may scan for unmapped doc
                                      # dirs; empty (default) = discovery off.
 
@@ -66,9 +66,11 @@ def environment() -> DocDriftEnvironment:
 def _discovery_window(data: dict, cfg: dict) -> int:
     """Days back that doc-root discovery treats as "recently changed".
 
-    Prefers an explicit [doc_drift] discovery_window_days; otherwise borrows
-    [git_recap] window_days (default 7) so the two engines compose with no
-    extra config. 0 disables discovery.
+    Reads [doc_drift] discovery_window_days; if unset, falls through a
+    legacy [git_recap] window_days lookup to a default of 7. git_recap
+    defines no window_days key of its own (its window is first_run_days),
+    so absent an explicit discovery_window_days this is simply 7.
+    0 disables discovery.
     """
     raw = cfg.get("discovery_window_days")
     if raw is None:

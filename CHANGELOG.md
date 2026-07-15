@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - doc-drift canonical-first map-gap discovery: a file that changed within
-  the discovery window (borrowed from `[git_recap] window_days`), sits
+  the discovery window (`[doc_drift] discovery_window_days`, default 7), sits
   beside a watched canonical, shares its extension, and is not itself
   watched, is raised as an operator action proposing the exact map edit.
   The doc-map is never machine-written; discovery is a helper to the
