@@ -28,7 +28,7 @@ to exactly one. Imports flow downward only.
 |-------|---------|------|
 | **Entry** | `looper.py`, `__main__.py` | composition: drive a full pass |
 | **Machinery** | `goose.py`, `context_prepend.py`, `predicates.py`, `footer.py` | the working parts of one recipe invocation |
-| **Contracts** | `engine.py`, `phase.py`, `branch_policy.py`, `environment.py`, `contrib/` | the extension surface engines implement |
+| **Contracts** | `engine.py`, `phase.py`, `branch_policy.py`, `environment.py` | the extension surface engines implement |
 | **Foundation** | `protocol.py`, `artifact.py`, `toolkit.py`, `text.py`, `extract.py`, `session.py`, `config.py`, `recipe_merge.py` | wire formats, plain data, stdlib-only helpers |
 
 - **Foundation** is the substrate: the review schema and its validation
@@ -36,8 +36,8 @@ to exactly one. Imports flow downward only.
   toolkit (`toolkit.py`), and io/parsing helpers. Foundation members import
   only other Foundation members.
 - **Contracts** are what an engine author touches: the Engine and Environment
-  ABCs, Phase/Pipeline/Context, BranchPolicy, and the shape-specific contrib
-  mixins. Contracts may import Foundation.
+  ABCs, Phase/Pipeline/Context, and BranchPolicy. Contracts may import
+  Foundation.
 - **Machinery** runs one recipe call: rendering context into the prompt,
   invoking goose with retry, success predicates, footers. Machinery may
   import Contracts and Foundation. Machinery above Contracts is deliberate:

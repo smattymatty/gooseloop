@@ -1,9 +1,9 @@
 """Environment abstract base class.
 
-Per ADR 0005 the framework ABC has exactly one abstract method: env_vars().
-Shape-specific contracts (customer pipelines, Claude design-handoff,
-future domains) live as separate ABCs under gooseloop.contrib.* and inherit
-from this base.
+Per ADR 0005 (superseded by ADR 0017) the framework ABC has exactly one
+abstract method: env_vars(). Shape-specific contracts (paths, loaders, domain
+vocabulary) are not part of the framework. A consuming project defines its own
+base ABCs for its domain, and its concrete environments subclass those.
 
 Engines pull paths and project-data via ctx.environment, calling whatever
 methods the concrete instance exposes. Recipes paste content via the
@@ -18,7 +18,8 @@ class Environment(ABC):
 
     A concrete environment must return the env vars the looper should merge
     into every recipe call. Everything else (paths, loaders, project data)
-    is shape-specific and lives on a contrib mixin or the concrete class.
+    is shape-specific and lives on the concrete class (or a base ABC the
+    consuming project defines), not in the framework.
     """
 
     @abstractmethod

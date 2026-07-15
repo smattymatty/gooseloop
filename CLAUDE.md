@@ -31,8 +31,8 @@ plugs in via two objects and some recipes. That is the entire extension surface.
 - **Environment** (nouns). Declares what the engine can see. The ABC has one
   abstract method, `env_vars()`. Anything a recipe needs as pasted text is a
   method the recipe calls via `env_method:<name>`. Subclass
-  `gooseloop.Environment`, or a `gooseloop.contrib.*` mixin if one fits your
-  shape.
+  `gooseloop.Environment` and add whatever methods your recipes call; the
+  framework ships no domain-specific base classes.
 - **Pipeline** (the bookend). The `review -> body -> summary` dataclass an
   engine returns from `pipeline()`.
 
