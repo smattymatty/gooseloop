@@ -1,8 +1,8 @@
 """Engine abstract base class.
 
 Per ADRs 0001 (engine returns Pipeline), 0006 (named-slot Pipeline), 0007
-(BranchPolicy registry). The framework runs the Pipeline; the engine owns
-what's inside it.
+(review schema + operator_actions ledger). The framework runs the Pipeline;
+the engine owns what's inside it.
 
 There is no decorator-based engine registry in v1.0. The CLI imports the
 engine module declared in gooseloop.toml and reads the engine class from

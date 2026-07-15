@@ -3,11 +3,12 @@
 Demonstrates every gooseloop contract:
 
     - Engine returns Pipeline(review, body, summary) (ADR 0006).
-    - Engine declares branch_policies for its routing entries (ADR 0007).
+    - Engine declares branch_policies that turn the review's routing[] into
+      body phases (ADR 0013; the routing schema itself is ADR 0007).
     - Engine ships *.example.yaml recipes users cp into their project (ADR 0008).
-    - Environment subclasses bare gooseloop.Environment (no contrib mixin
-      needed for trivial cases) — illustrates the "one method, no
-      obligations" path opened by ADR 0005.
+    - Environment subclasses bare gooseloop.Environment and writes one method
+      — the "one method, no obligations" path (ADR 0005, as amended by
+      ADR 0017: the framework ships no domain base classes).
 
 The review reads a list of NAMES from the environment and emits one
 routing[] entry per name. Each body invocation of `greet` says hello to

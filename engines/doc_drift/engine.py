@@ -857,11 +857,11 @@ def _read_capped(path: Path) -> str:
         return f"(could not read {path}: {e})"
 
 
-# ---- git-recap bridge: match commits to their recap files --------
+# ---- draft markers: read the body's verdict off a draft file ----
 
-# git-recap names per-commit files <stamp>-<slug>-<sha8>.md; the trailing
-# hex run is a commit-sha prefix. The weekly/ rollups carry no sha and are
-# skipped (top-level glob only). 7-40 hex tolerates 7- or 8-char prefixes.
+# Each draft's first line carries a marker the body wrote: `drift=none`
+# for a false positive, and a `doc-drift: touches=...` comment naming the
+# canonicals the draft actually relied on. These two regexes parse them.
 _DRIFT_NONE_RE = re.compile(r"drift\s*=\s*none", re.IGNORECASE)
 _TOUCHES_RE = re.compile(r"doc-drift:\s*touches\s*=\s*(.*?)\s*-->", re.IGNORECASE)
 
