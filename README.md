@@ -129,8 +129,3 @@ is only what a bare `gooseloop run` runs.
 
 Apache 2.0, matching the goose layer it builds on. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
 
-## Provenance
-
-`gooseloop` was extracted from Storm Developments' customer-acquisition pipeline
-in June 2026. Storm's customer engine remains the reference consumer; the
-framework is independent and OSS-first.
