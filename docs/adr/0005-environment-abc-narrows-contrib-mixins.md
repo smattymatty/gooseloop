@@ -1,7 +1,16 @@
 ## ADR 0005 — Environment ABC narrows; contrib mixins carry shape
 
-**Status:** Accepted (2026-06-04)
+**Status:** Superseded by [ADR 0017](0017-contrib-withdrawn-shape-abcs-live-in-the-consuming-project.md) (2026-07-15)
 **Context:** OSS-extraction design review; sequel to [ADR 0004](0004-engine-and-environment-as-siblings.md)
+
+> **Superseded.** This ADR narrowed the framework ABC to `env_vars()` and put
+> the leftover shape methods on contrib mixins that shipped *inside* the
+> `gooseloop` wheel. The narrowing stands; the in-wheel contrib mixins do not.
+> Shipping `CustomerPipelineEnvironment` and `ClaudeHandoffEnvironment` inside a
+> framework that claims to know nothing about your domain was the contradiction
+> ADR 0017 removes. The tradeoff below ("Contrib mixins ship in the `gooseloop`
+> repo for now") is the seam that was pulled. Read this for history; ADR 0017
+> is the live decision.
 
 ## Context
 
