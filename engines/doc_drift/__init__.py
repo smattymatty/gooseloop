@@ -15,6 +15,10 @@ Configuration (in gooseloop.toml):
     map = "doc-map.toml"             # canonical→derived map (hand-maintained)
     state = "doc-map.state.json"     # engine's cross-run memory (machine-written)
     drafts_dir = "doc-drift-drafts"  # where per-pair patch drafts land
+    discovery_window_days = 7        # doc-root discovery window; 0 disables.
+                                     # Defaults to [git_recap].window_days.
+    discovery_roots = ["../website"] # dirs discovery may scan for unmapped doc
+                                     # dirs; empty (default) = discovery off.
 
 All three paths are relative to the current working directory, like
 git_recap's output_dir — run gooseloop from the directory holding the map.
@@ -48,12 +52,46 @@ def environment() -> DocDriftEnvironment:
     map_path = Path(cfg.get("map", "doc-map.toml")).expanduser().resolve()
     state_path = Path(cfg.get("state", "doc-map.state.json")).expanduser().resolve()
     drafts_dir = Path(cfg.get("drafts_dir", "doc-drift-drafts")).expanduser().resolve()
+    map_dir = map_path.parent
     return DocDriftEnvironment(
         map_path=map_path,
         state_path=state_path,
         drafts_dir=drafts_dir,
         journal_dir=_journal_dir(data, cfg),
+        discovery_window_days=_discovery_window(data, cfg),
+        discovery_roots=_discovery_roots(cfg, map_dir),
     )
+
+
+def _discovery_window(data: dict, cfg: dict) -> int:
+    """Days back that doc-root discovery treats as "recently changed".
+
+    Prefers an explicit [doc_drift] discovery_window_days; otherwise borrows
+    [git_recap] window_days (default 7) so the two engines compose with no
+    extra config. 0 disables discovery.
+    """
+    raw = cfg.get("discovery_window_days")
+    if raw is None:
+        raw = data.get("git_recap", {}).get("window_days", 7)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 7
+
+
+def _discovery_roots(cfg: dict, map_dir: Path) -> list[Path]:
+    """Directories doc-root discovery may scan for unmapped doc dirs. Empty
+    (the default) turns discovery off — it never roams the tree uninvited.
+    Relative entries resolve against the map's directory, like everything else
+    in the map."""
+    raw = cfg.get("discovery_roots")
+    if not isinstance(raw, list):
+        return []
+    roots: list[Path] = []
+    for entry in raw:
+        p = Path(str(entry)).expanduser()
+        roots.append(p if p.is_absolute() else (map_dir / p).resolve())
+    return roots
 
 
 def _journal_dir(data: dict, cfg: dict) -> Path:

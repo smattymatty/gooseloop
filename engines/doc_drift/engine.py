@@ -32,13 +32,35 @@ Why routing is deterministic, not model-driven:
 The change signal:
 
     File sources carry a git commit sha (or content hash if untracked) AND a
-    timestamp, so a file/file pair gets a temporal shortcut: a derived at least
-    as recent as the canonical already followed it. URL sources usually expose
-    no Last-Modified and no ETag, so they carry a content hash over normalized
-    text and no usable timestamp; for those, drift is content-change-driven (a
-    side changed since the last settled check). The body's verdict (real drift
+    timestamp; URL sources carry a content hash (or ETag) and usually no usable
+    timestamp. Drift is content-change-driven: a token that moved from the last
+    verified state is a candidate. The mtime "derived is at least as recent as
+    the canonical" shortcut fires ONLY on first sight, never after a pair has
+    history, because a timestamp bump is not proof of reconciliation (it would
+    bury real drift in the KEEP-quiet direction). The body's verdict (real drift
     vs a false positive) is captured back into state so an unchanged in-sync
     pair stops re-routing.
+
+    The touches gate keeps that honesty affordable. Each draft records, as a
+    marker, which canonicals it actually relied on; a later change to a canonical
+    a view never relied on is skipped without a draft. The gate is pure set
+    membership over state (zero added model cost) and fails safe: an unknown or
+    empty touches set never narrows, so an uncertain pair is always re-checked.
+
+Design invariant (unmapped doc-root discovery):
+
+    The doc-map is NEVER machine-written. Discovery only PROPOSES map edits as
+    operator actions; the operator seals every change by hand.
+
+    Discovery is deliberately DERIVED-first, not canonical-first. An earlier
+    canonical-first pass (flag files sitting beside a watched canonical) was
+    removed: this map's canonicals are code files in large code directories, so
+    "sibling of a canonical" flagged every source file in the tree — 50 false
+    positives in one run. See ADR docs/adr/0016. Instead, unmapped_doc_roots()
+    scans only the operator's declared discovery_roots for DIRECTORIES of
+    markdown that no collection glob covers — a whole unmapped doc area is a
+    real, bounded, high-signal gap. Derived docs INSIDE a mapped root already
+    surface for free, because collections are globs.
 
 A note on the framework: an env_method context source takes no arguments and
 cannot see a phase's routing params, so per-pair content must be passed via
@@ -83,6 +105,13 @@ from gooseloop.toolkit import (
 
 
 _HERE = Path(__file__).resolve().parent
+
+# Doc-root discovery: dirs never walked into (vendored/generated/VCS), and the
+# minimum unmapped .md files a directory needs before it's worth proposing as a
+# new collection (one stray README should not trip it).
+_PRUNE_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv",
+               ".mypy_cache", ".pytest_cache", "dist", "build", ".tox"}
+_DOC_ROOT_MIN = 3
 
 _USER_AGENT = "doc-drift/1.0 (+https://github.com/smattymatty/gooseloop)"
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
@@ -306,10 +335,36 @@ class TriageRow:
     verdict: str
     detail: str
     prior_status: Optional[str]
+    canon_tokens: dict[str, str] = field(default_factory=dict)
 
 
-def _classify(pair: Pair, canon: Rev, deriv: Rev, prior: Optional[dict]) -> tuple[str, str]:
-    """The whole triage decision, deterministic and testable."""
+def _classify(
+    pair: Pair,
+    canon: Rev,
+    deriv: Rev,
+    prior: Optional[dict],
+    *,
+    canon_tokens: Optional[dict[str, str]] = None,
+) -> tuple[str, str]:
+    """The whole triage decision, deterministic and testable.
+
+    Two honesty rules the mtime signal alone cannot give:
+
+    - The temporal shortcut (a derived at least as recent as the canonical has
+      already followed it) fires ONLY on first sight (no prior state). Once a
+      pair has history, "the derived is newer" is not proof it was reconciled
+      against THIS canonical revision: bumping a date or fixing a typo moves the
+      derived's timestamp without touching the drift, which would bury real
+      drift in the KEEP-quiet direction. After first sight, any token change
+      from the last verified state is a candidate.
+
+    - The touches gate. When a canonical changed but the derived did not, and
+      the pair's learned `touches` set (the canonicals its last draft actually
+      relied on) excludes every changed canonical, the change cannot affect this
+      view, so it is in sync with no draft. Fails safe: an unknown touches set
+      (never drafted) or an empty one never narrows, so an uncertain pair is
+      always re-checked, never silently skipped.
+    """
     if not canon.exists:
         return ERROR, canon.detail or "a canonical source is not readable"
     if not deriv.exists:
@@ -326,12 +381,24 @@ def _classify(pair: Pair, canon: Rev, deriv: Rev, prior: Optional[dict]) -> tupl
         if status == "in-sync":
             return IN_SYNC, "unchanged since the last in-sync check"
 
-    if canon.ts is not None and deriv.ts is not None and deriv.ts >= canon.ts:
-        return IN_SYNC, "derived view is at least as recent as the canonical"
-
-    if prior is None:
+    # First sight: no history to reason from. Trust the clock exactly once, to
+    # spare a cold-start flood, then never again.
+    if not isinstance(prior, dict):
+        if canon.ts is not None and deriv.ts is not None and deriv.ts >= canon.ts:
+            return IN_SYNC, "first sight: derived is at least as recent as the canonical"
         return CANDIDATE, "not yet verified against the canonical"
-    return CANDIDATE, "a side changed since the last check"
+
+    # We have history and a token moved. Before spending a draft, try the
+    # touches gate: a canonical this view never relied on cannot have drifted it.
+    deriv_changed = deriv.token != prior.get("deriv_token")
+    touches = prior.get("touches")
+    if not deriv_changed and canon_tokens and touches:
+        prior_tokens = prior.get("canon_tokens") or {}
+        changed = {p for p, t in canon_tokens.items() if prior_tokens.get(p) != t}
+        if changed and changed.isdisjoint(set(touches)):
+            names = ", ".join(sorted(_short_name(c) for c in changed))
+            return IN_SYNC, f"changed canonical(s) not referenced by this view: {names}"
+    return CANDIDATE, "the canonical changed since the last verified check"
 
 
 # ---- the environment ---------------------------------------------
@@ -345,10 +412,20 @@ class DocDriftEnvironment(Environment):
         state_path: Path,
         drafts_dir: Path,
         journal_dir: Optional[Path] = None,
+        discovery_window_days: int = 7,
+        discovery_roots: Optional[list[Path]] = None,
     ) -> None:
         self.map_path = map_path
         self.state_path = state_path
         self.drafts_dir = drafts_dir
+        # Doc-root discovery only surfaces directories with a file changed
+        # within this window (borrowed from git_recap's window_days so the two
+        # compose). 0 disables discovery entirely.
+        self.discovery_window_days = discovery_window_days
+        # The only directories doc-root discovery is allowed to scan. Empty =
+        # discovery off. Never roams outside these (the anti-sprawl bound that
+        # the removed canonical-first pass lacked).
+        self.discovery_roots = discovery_roots or []
         # Optional: git-recap's journal folder (daily/ entries inside). If
         # it exists on disk, the bundle gets a "what changed in the canonical
         # and why" section built from the DAILY entries for the days the
@@ -453,12 +530,14 @@ class DocDriftEnvironment(Environment):
         state_pairs = self.state().get("pairs", {})
         rows: list[TriageRow] = []
         for pair in self.pairs():
-            canon = _combine_canon([self._probe(s) for s in pair.canonical])
+            per_canon = {s.value: self._probe(s) for s in pair.canonical}
+            canon = _combine_canon(list(per_canon.values()))
+            canon_tokens = {v: r.token for v, r in per_canon.items()}
             deriv = self._probe(pair.derived)
             prior = state_pairs.get(pair.id)
-            verdict, detail = _classify(pair, canon, deriv, prior)
+            verdict, detail = _classify(pair, canon, deriv, prior, canon_tokens=canon_tokens)
             prior_status = prior.get("status") if isinstance(prior, dict) else None
-            rows.append(TriageRow(pair, canon, deriv, verdict, detail, prior_status))
+            rows.append(TriageRow(pair, canon, deriv, verdict, detail, prior_status, canon_tokens))
         self._triage = rows
         return rows
 
@@ -591,8 +670,14 @@ class DocDriftEnvironment(Environment):
 
     # ---- state: the cross-run memory -----------------------------
 
-    def write_state(self, outcomes: dict[str, str]) -> Path:
+    def write_state(
+        self,
+        outcomes: dict[str, str],
+        touches_map: Optional[dict[str, Optional[list[str]]]] = None,
+    ) -> Path:
         rows = self.triage()
+        touches_map = touches_map or {}
+        old_pairs = self.state().get("pairs", {})  # read before we overwrite
         pairs_state: dict[str, dict] = {}
         map_health: list[dict] = list(self.collection_problems())
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -610,16 +695,74 @@ class DocDriftEnvironment(Environment):
                 status = "in-sync"
             else:
                 status = "candidate"  # never handled (body errored) — recheck next run
-            pairs_state[r.pair.id] = {
+            # A fresh draft this run overrides touches; otherwise keep the set
+            # learned last time so a gate-skip (in-sync without a re-draft) does
+            # not forget which canonicals this view relies on. None means unknown
+            # and disables the gate (fail safe toward re-checking).
+            prior_touches = (old_pairs.get(r.pair.id) or {}).get("touches")
+            touches = touches_map.get(r.pair.id, prior_touches) if r.pair.id in touches_map else prior_touches
+            entry = {
                 "canon_token": r.canon.token,
+                "canon_tokens": r.canon_tokens,
                 "deriv_token": r.deriv.token,
                 "status": status,
                 "checked_at": now,
             }
+            if touches:
+                entry["touches"] = touches
+            pairs_state[r.pair.id] = entry
         new_state = {"version": 1, "checked_at": now, "pairs": pairs_state, "map_health": map_health}
         _save_state(self.state_path, new_state)
         self._state = new_state
         return self.state_path
+
+    # ---- doc-root discovery: find doc dirs the map doesn't watch -----
+
+    def _mapped_derived_files(self) -> set[str]:
+        """Every derived FILE the map already watches (resolved absolute),
+        across static pairs and glob-expanded collections. URL-derived views
+        have no filesystem path and are excluded."""
+        mapped: set[str] = set()
+        for pair in self.pairs():
+            if not pair.derived.is_url:
+                mapped.add(str(Path(pair.derived.value).resolve()))
+        return mapped
+
+    def unmapped_doc_roots(self) -> list[dict]:
+        """Derived-first discovery: within the operator's declared
+        discovery_roots, a DIRECTORY of markdown that no collection glob covers
+        is a candidate new collection.
+
+        Returns [{"dir": d, "count": n}, ...]. Never writes the map; the engine
+        turns each into an operator action proposing a collection, sealed by
+        hand. High-signal by construction: only declared roots are scanned
+        (never the whole tree), junk dirs are pruned, and a directory qualifies
+        only with >= _DOC_ROOT_MIN unmapped .md files at least one of which
+        changed within discovery_window_days. Replaces the removed
+        canonical-first sibling-scan (ADR docs/adr/0016)."""
+        window = self.discovery_window_days
+        if not window or window <= 0 or not self.discovery_roots:
+            return []
+        cutoff = datetime.now(timezone.utc).timestamp() - window * 86400
+        mapped = self._mapped_derived_files()
+        gaps: list[dict] = []
+        for root in self.discovery_roots:
+            root = Path(root)
+            if not root.is_dir():
+                continue
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = [d for d in dirnames if d not in _PRUNE_DIRS]
+                unmapped = [
+                    Path(dirpath) / f for f in filenames
+                    if f.endswith(".md")
+                    and str((Path(dirpath) / f).resolve()) not in mapped
+                ]
+                if len(unmapped) < _DOC_ROOT_MIN:
+                    continue
+                if not any((doc_rev(p).ts or 0) >= cutoff for p in unmapped):
+                    continue
+                gaps.append({"dir": dirpath, "count": len(unmapped)})
+        return sorted(gaps, key=lambda g: g["dir"])
 
 
 # ---- discovery ---------------------------------------------------
@@ -720,6 +863,7 @@ def _read_capped(path: Path) -> str:
 # hex run is a commit-sha prefix. The weekly/ rollups carry no sha and are
 # skipped (top-level glob only). 7-40 hex tolerates 7- or 8-char prefixes.
 _DRIFT_NONE_RE = re.compile(r"drift\s*=\s*none", re.IGNORECASE)
+_TOUCHES_RE = re.compile(r"doc-drift:\s*touches\s*=\s*(.*?)\s*-->", re.IGNORECASE)
 
 
 def _draft_outcome(path: Path) -> Optional[str]:
@@ -733,6 +877,33 @@ def _draft_outcome(path: Path) -> Optional[str]:
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         head = f.read(400)
     return "in-sync" if _DRIFT_NONE_RE.search(head) else "drafted"
+
+
+def _draft_touches(path: Path, known: list[str]) -> Optional[list[str]]:
+    """The canonicals the draft says it actually relied on, matched back to the
+    pair's real canonical identifiers.
+
+    Reads the `<!-- doc-drift: touches=a, b -->` marker. Each listed token is
+    matched to a known canonical by exact value or basename. Returns the matched
+    subset, or None when the marker is absent or nothing matched (unknown =>
+    the gate stays off and the pair is always re-checked; the KEEP-safe default).
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        head = f.read(800)
+    m = _TOUCHES_RE.search(head)
+    if not m:
+        return None
+    listed = [t.strip() for t in m.group(1).split(",") if t.strip()]
+    by_base = {_short_name(k): k for k in known}
+    matched: list[str] = []
+    for tok in listed:
+        if tok in known and tok not in matched:
+            matched.append(tok)
+        elif _short_name(tok) in by_base and by_base[_short_name(tok)] not in matched:
+            matched.append(by_base[_short_name(tok)])
+    return matched or None
 
 
 # ---- the engine --------------------------------------------------
@@ -848,19 +1019,22 @@ def _persist_state(_stdout: str, ctx: Context) -> None:
     if not isinstance(env, DocDriftEnvironment):
         return
     outcomes: dict[str, str] = {}
+    touches_map: dict[str, Optional[list[str]]] = {}
     for row in env.triage():
         if row.verdict != CANDIDATE:
             continue
-        outcome = _draft_outcome(env.draft_path(row.pair.id))
+        draft = env.draft_path(row.pair.id)
+        outcome = _draft_outcome(draft)
         if outcome is None:
             continue
         outcomes[row.pair.id] = outcome
+        touches_map[row.pair.id] = _draft_touches(draft, list(row.canon_tokens))
         if outcome == "drafted":
             note = f" {row.pair.note}" if row.pair.note else ""
             ctx.add_operator_action(
                 f"Review and seal the doc-drift draft for {row.pair.id}",
                 why=(f"the derived view drifted from its canonical; a patch draft "
-                     f"is waiting at {env.draft_path(row.pair.id)}.{note}"),
+                     f"is waiting at {draft}.{note}"),
             )
     for row in env.triage():
         if row.verdict == ERROR:
@@ -873,7 +1047,17 @@ def _persist_state(_stdout: str, ctx: Context) -> None:
             f"Fix doc-map collection {problem['collection']}: {problem['problem']}",
             why="the collection didn't expand, so its pages went unchecked this run.",
         )
-    path = env.write_state(outcomes)
+    # Doc-root discovery: recommend map edits, never apply them. The map is
+    # never machine-written; an unmapped directory of docs is a friendly nudge
+    # to the operator's seal to add a collection for it.
+    for root in env.unmapped_doc_roots():
+        ctx.add_operator_action(
+            f"Add a collection for {root['dir']} ({root['count']} unmapped docs)",
+            why=(f"{root['count']} markdown files there are watched by no "
+                 f"collection glob and at least one changed recently, so drift "
+                 f"in them goes unseen."),
+        )
+    path = env.write_state(outcomes, touches_map)
     ctx.session_log(
         f"doc-drift: state for {len(env.triage())} pairs -> {path.name} "
         f"({sum(v == 'drafted' for v in outcomes.values())} drafted)"

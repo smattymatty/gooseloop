@@ -31,6 +31,7 @@ from engines.doc_drift.engine import (
     _combine_canon,
     _discover_sitemap,
     _draft_outcome,
+    _draft_touches,
     _filter_urls,
     _persist_state,
     _safe_filename,
@@ -653,3 +654,225 @@ def test_draft_phase_raises_seal_action_the_moment_it_lands(tmp_path):
     ctx2 = Context(model="m", session_dir=None, base_env={}, environment=env)
     _record_and_raise(ctx2, row, draft)
     assert ctx2.artifacts.get("operator_actions", []) == []
+
+
+# ---- fix 2: the mtime shortcut is first-sight only ----------------
+
+def test_classify_mtime_shortcut_only_on_first_sight():
+    """The false-negative the shortcut used to cause: a pair already in-sync,
+    the canonical then moves, the derived was NOT re-edited (same token) but its
+    timestamp is still newer. Old code declared IN_SYNC via mtime and buried the
+    drift. With history, only a token match is trusted, so this is a candidate."""
+    prior = {"canon_token": "c_old", "deriv_token": "d",
+             "canon_tokens": {"/c": "c_old"}, "status": "in-sync"}
+    canon = Rev("c_new", 100, True)   # canonical moved
+    deriv = Rev("d", 200, True)       # derived unchanged token, but newer mtime
+    assert _classify(_pair(), canon, deriv, prior)[0] == CANDIDATE
+    # And on genuine first sight the shortcut still spares the cold-start flood.
+    assert _classify(_pair(), canon, deriv, None)[0] == IN_SYNC
+
+
+def test_classify_derived_only_edit_is_candidate():
+    """A derived-only change (canonical stable) must re-verify: the edit may have
+    introduced drift the old temporal shortcut swallowed."""
+    prior = {"canon_token": "c", "deriv_token": "d_old",
+             "canon_tokens": {"/c": "c"}, "status": "in-sync"}
+    canon = Rev("c", 1, True)
+    deriv = Rev("d_new", 9, True)
+    assert _classify(_pair(), canon, deriv, prior)[0] == CANDIDATE
+
+
+# ---- fix 3: the touches gate --------------------------------------
+
+def _multi_pair():
+    return _pair(canonical=(Source("file", "/a"), Source("file", "/b")))
+
+
+def _prior(touches, tb="tb_old"):
+    return {"canon_token": "combined_old", "deriv_token": "d",
+            "canon_tokens": {"/a": "ta", "/b": tb},
+            "status": "in-sync", "touches": touches}
+
+
+def test_touches_gate_skips_untouched_canonical():
+    """B changed, the derived did not, and this view's last draft only relied on
+    A. B cannot have drifted a view that never read it, so it is in sync with no
+    draft, no model call."""
+    canon = Rev("combined_new", 5, True)
+    tokens = {"/a": "ta", "/b": "tb_new"}   # only B moved
+    verdict, detail = _classify(_multi_pair(), canon, Rev("d", 9, True),
+                                _prior(["/a"]), canon_tokens=tokens)
+    assert verdict == IN_SYNC and "not referenced" in detail
+
+
+def test_touches_gate_rechecks_when_a_touched_canonical_changes():
+    canon = Rev("combined_new", 5, True)
+    tokens = {"/a": "ta", "/b": "tb_new"}
+    assert _classify(_multi_pair(), canon, Rev("d", 9, True),
+                     _prior(["/b"]), canon_tokens=tokens)[0] == CANDIDATE
+
+
+def test_touches_gate_off_when_set_unknown():
+    """No learned touches set (never drafted) => never narrow. Fail safe."""
+    prior = {"canon_token": "combined_old", "deriv_token": "d",
+             "canon_tokens": {"/a": "ta", "/b": "tb_old"}, "status": "in-sync"}
+    canon = Rev("combined_new", 5, True)
+    tokens = {"/a": "ta", "/b": "tb_new"}
+    assert _classify(_multi_pair(), canon, Rev("d", 9, True), prior,
+                     canon_tokens=tokens)[0] == CANDIDATE
+
+
+def test_touches_gate_off_when_empty_set():
+    """An empty touches set must not skip everything (isdisjoint over empty is
+    vacuously true) — the truthiness guard keeps an empty set from narrowing."""
+    canon = Rev("combined_new", 5, True)
+    tokens = {"/a": "ta", "/b": "tb_new"}
+    assert _classify(_multi_pair(), canon, Rev("d", 9, True),
+                     _prior([]), canon_tokens=tokens)[0] == CANDIDATE
+
+
+def test_touches_gate_off_when_derived_also_changed():
+    """If the derived itself moved, re-verify regardless of touches."""
+    canon = Rev("combined_new", 5, True)
+    tokens = {"/a": "ta", "/b": "tb_new"}
+    assert _classify(_multi_pair(), canon, Rev("d_new", 9, True),
+                     _prior(["/a"]), canon_tokens=tokens)[0] == CANDIDATE
+
+
+# ---- fix 3: touches parsing + state round trip --------------------
+
+def test_draft_touches_parses_and_matches(tmp_path):
+    known = ["/repo/pricing.py", "/repo/capacity.py"]
+    exact = _write(tmp_path / "e.md",
+                   "<!-- doc-drift: drift=yes -->\n"
+                   "<!-- doc-drift: touches=/repo/pricing.py -->\n# x\n")
+    base = _write(tmp_path / "b.md",
+                  "<!-- doc-drift: drift=yes -->\n"
+                  "<!-- doc-drift: touches=capacity.py, pricing.py -->\n# x\n")
+    none = _write(tmp_path / "n.md", "<!-- doc-drift: drift=yes -->\n# no touches\n")
+    empty = _write(tmp_path / "z.md",
+                   "<!-- doc-drift: drift=yes -->\n<!-- doc-drift: touches= -->\n# x\n")
+    assert _draft_touches(exact, known) == ["/repo/pricing.py"]
+    assert set(_draft_touches(base, known)) == set(known)      # basename match
+    assert _draft_touches(none, known) is None                 # absent => unknown
+    assert _draft_touches(empty, known) is None                # empty => unknown
+
+
+def test_write_state_records_canon_tokens_and_touches(tmp_path):
+    repo = _make_repo(tmp_path / "r")
+    _commit(repo, "doc.md", "old", "2026-01-01T00:00:00")
+    _commit(repo, "src.py", "new", "2026-02-01T00:00:00")
+    env = _file_pair_env(tmp_path, repo)
+    canon_value = next(iter(env.row_for("a").canon_tokens))
+    env.write_state({"a": "drafted"}, {"a": [canon_value]})
+    st = json.loads(env.state_path.read_text())["pairs"]["a"]
+    assert st["touches"] == [canon_value]
+    assert st["canon_tokens"] and canon_value in st["canon_tokens"]
+
+
+def test_write_state_preserves_touches_when_not_redrafted(tmp_path):
+    repo = _make_repo(tmp_path / "r")
+    _commit(repo, "doc.md", "old", "2026-01-01T00:00:00")
+    _commit(repo, "src.py", "new", "2026-02-01T00:00:00")
+    canon_value = next(iter(_file_pair_env(tmp_path, repo).row_for("a").canon_tokens))
+    _file_pair_env(tmp_path, repo).write_state({"a": "drafted"}, {"a": [canon_value]})
+    # A later run that does not re-draft this pair keeps the learned set.
+    _file_pair_env(tmp_path, repo).write_state({}, {})
+    st = json.loads((tmp_path / "state.json").read_text())["pairs"]["a"]
+    assert st["touches"] == [canon_value]
+
+
+# ---- fix 1: canonical-first map-gap discovery ---------------------
+
+def _disc_env(tmp_path, map_body, window, roots=None):
+    return DocDriftEnvironment(
+        map_path=_write(tmp_path / "doc-map.toml", map_body),
+        state_path=tmp_path / "state.json",
+        drafts_dir=tmp_path / "drafts",
+        discovery_window_days=window,
+        discovery_roots=roots or [],
+    )
+
+
+def _dummy_pair(repo: Path) -> str:
+    """A valid pair that watches nothing under the docs dir being tested, so
+    the docs there read as unmapped."""
+    return (f'[[pair]]\nid="a"\ncanonical="{repo / "src.py"}"\n'
+            f'derived="{repo / "other.md"}"\n')
+
+
+def _seed_repo(repo: Path) -> None:
+    _commit(repo, "src.py", "code", "2026-01-01T00:00:00")
+    _commit(repo, "other.md", "mapped-derived", "2026-01-01T00:00:00")
+
+
+def test_doc_root_flagged_when_enough_recent_unmapped(tmp_path):
+    repo = _make_repo(tmp_path / "r")
+    _seed_repo(repo)
+    for i in range(3):
+        _commit(repo, f"adrs/{i}.md", f"doc{i}", "2026-06-01T00:00:00")
+    env = _disc_env(tmp_path, _dummy_pair(repo), window=10 ** 7, roots=[repo])
+    roots = env.unmapped_doc_roots()
+    hit = next(r for r in roots if r["dir"] == str(repo / "adrs"))
+    assert hit["count"] == 3
+
+
+def test_doc_root_ignores_glob_mapped_dir(tmp_path):
+    repo = _make_repo(tmp_path / "r")
+    _commit(repo, "src.py", "code", "2026-01-01T00:00:00")
+    for i in range(3):
+        _commit(repo, f"guide/{i}.md", f"doc{i}", "2026-06-01T00:00:00")
+    body = (f'[[collection]]\nid="g"\ncanonical="{repo / "src.py"}"\n'
+            f'glob="{repo / "guide"}/**/*.md"\n')
+    env = _disc_env(tmp_path, body, window=10 ** 7, roots=[repo])
+    assert env.unmapped_doc_roots() == []   # the whole dir is glob-covered
+
+
+def test_doc_root_below_threshold_ignored(tmp_path):
+    repo = _make_repo(tmp_path / "r")
+    _seed_repo(repo)
+    for i in range(2):   # only 2 < _DOC_ROOT_MIN
+        _commit(repo, f"notes/{i}.md", f"n{i}", "2026-06-01T00:00:00")
+    env = _disc_env(tmp_path, _dummy_pair(repo), window=10 ** 7, roots=[repo])
+    assert env.unmapped_doc_roots() == []
+
+
+def test_doc_root_stale_ignored(tmp_path):
+    repo = _make_repo(tmp_path / "r")
+    _seed_repo(repo)
+    for i in range(3):
+        _commit(repo, f"adrs/{i}.md", f"d{i}", "2020-01-01T00:00:00")  # ancient
+    env = _disc_env(tmp_path, _dummy_pair(repo), window=1, roots=[repo])
+    assert env.unmapped_doc_roots() == []   # none changed within the window
+
+
+def test_doc_root_prunes_junk_dirs(tmp_path):
+    repo = _make_repo(tmp_path / "r")
+    _seed_repo(repo)
+    for i in range(3):
+        _commit(repo, f"node_modules/{i}.md", f"junk{i}", "2026-06-01T00:00:00")
+    env = _disc_env(tmp_path, _dummy_pair(repo), window=10 ** 7, roots=[repo])
+    assert env.unmapped_doc_roots() == []   # node_modules never walked
+
+
+def test_doc_root_discovery_off_without_roots_or_window(tmp_path):
+    repo = _make_repo(tmp_path / "r")
+    _seed_repo(repo)
+    for i in range(3):
+        _commit(repo, f"adrs/{i}.md", f"d{i}", "2026-06-01T00:00:00")
+    assert _disc_env(tmp_path, _dummy_pair(repo), window=10 ** 7, roots=[]) \
+        .unmapped_doc_roots() == []                       # no roots
+    assert _disc_env(tmp_path, _dummy_pair(repo), window=0, roots=[repo]) \
+        .unmapped_doc_roots() == []                       # window disabled
+
+
+def test_persist_state_raises_doc_root_action(tmp_path):
+    repo = _make_repo(tmp_path / "r")
+    _seed_repo(repo)
+    for i in range(3):
+        _commit(repo, f"adrs/{i}.md", f"d{i}", "2026-06-01T00:00:00")
+    env = _disc_env(tmp_path, _dummy_pair(repo), window=10 ** 7, roots=[repo])
+    ctx = _ctx(env)
+    _persist_state("", ctx)
+    assert any(a["action"].startswith("Add a collection for") and "adrs" in a["action"]
+               for a in ctx.operator_actions)

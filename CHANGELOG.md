@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- doc-drift canonical-first map-gap discovery: a file that changed within
+  the discovery window (borrowed from `[git_recap] window_days`), sits
+  beside a watched canonical, shares its extension, and is not itself
+  watched, is raised as an operator action proposing the exact map edit.
+  The doc-map is never machine-written; discovery is a helper to the
+  operator's seal, not a hand on the wheel. The roaming derived-first
+  search is deferred.
+
+### Changed
+
+- doc-drift triage no longer trusts mtime after a pair has history. The
+  "derived at least as recent as the canonical" shortcut fires only on
+  first sight; once state exists, any token change from the last verified
+  revision is a candidate. A timestamp bump (a date change, a typo fix) is
+  not proof of reconciliation, and the old shortcut buried real drift in
+  the KEEP-quiet direction.
+
+- doc-drift adds a touches gate to keep that honesty affordable: each
+  draft records, as a marker, which canonicals it actually relied on, and
+  a later change to a canonical a view never relied on is skipped without
+  a draft. Pure set membership over state, zero added model cost, and
+  fails safe (an unknown or empty touches set never narrows).
+
 - Phase events persist the model's INPUT, not just its output (ADR 0012
   amendment): `prompt`/`prompt_chars` point at
   `transcripts/<seq>-<name>.prompt.yaml`, the rendered recipe exactly as

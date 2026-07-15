@@ -42,7 +42,19 @@ prompt: |
   The engine reads that line to decide whether a patch is waiting to be sealed
   or the pair is in sync. Get it right.
 
-  If there IS real drift, after the marker write:
+  The SECOND LINE must be a touches marker naming the canonical identifiers you
+  actually relied on to judge this view, copied verbatim from the labels after
+  "CANONICAL (source of truth):" in the bundle:
+
+      <!-- doc-drift: touches=path/to/a.py, path/to/b.py -->
+
+  The engine uses this to skip re-checking this view when a canonical it does
+  not rely on changes later. List only the canonicals this view actually
+  depends on. If you relied on all of them, or you are unsure which, list them
+  ALL, never a partial guess: an over-broad list only costs one extra check
+  later, a too-narrow one could hide real drift.
+
+  If there IS real drift, after the markers write:
 
       # Drift patch: ${PAIR_ID}
 
