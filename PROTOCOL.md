@@ -12,12 +12,12 @@ environment authors. If the code disagrees with this doc, the code is wrong.
 
 gooseloop is a three-primitive framework:
 
-- **Engine** — verbs. Declares the Pipeline shape, owns the BranchPolicy
-  registry, ships its recipe defaults.
-- **Environment** — nouns. Declares what the engine has access to. Framework
-  ABC has one abstract method (`env_vars()`); shape-specific contracts live
-  on contrib mixins (`gooseloop.contrib.CustomerPipelineEnvironment`,
-  `gooseloop.contrib.ClaudeHandoffEnvironment`, etc.).
+- **Engine** — verbs. Declares the Pipeline shape, owns its `branch_policies`,
+  ships its recipe defaults.
+- **Environment** — nouns. Declares what the engine has access to. The
+  framework ABC has one abstract method (`env_vars()`); any further domain
+  vocabulary is the concrete environment's own. The framework ships no
+  domain-specific base classes.
 - **Pipeline** — the bookend contract. Every engine returns:
   ```python
   @dataclass
@@ -326,7 +326,7 @@ when every required source resolves; exit 1 when a required source would fail
 the render. Optional failures are reported but tolerated, matching render-time
 strictness. `--json` emits the same data machine-readable, for dashboards.
 
-## 8. Environment ABC and contrib mixins
+## 8. Environment ABC
 
 The framework `Environment` ABC has exactly one abstract method:
 
@@ -337,19 +337,24 @@ class Environment(ABC):
         """Env vars merged into every recipe call."""
 ```
 
-Shape-specific contracts live under `gooseloop.contrib.*`. Two ship initially:
+That is the entire framework-level contract. Everything else an environment
+exposes — paths, loaders, domain vocabulary — is the concrete class's own. The
+framework ships no domain-specific base classes ([ADR 0017](docs/adr/0017-contrib-withdrawn-shape-abcs-live-in-the-consuming-project.md),
+superseding the in-wheel contrib mixins of [ADR 0005](docs/adr/0005-environment-abc-narrows-contrib-mixins.md)).
 
-- `gooseloop.contrib.CustomerPipelineEnvironment` — for customer-acquisition
-  pipelines. Adds `lifecycle_dirs`, `build_digest`, `journal_text`,
-  `questions_dir`, etc.
-- `gooseloop.contrib.ClaudeHandoffEnvironment` — for Claude design-handoff
-  engines. Adds `handoff_dir`, `target_repo`, `dev_up_probe`, etc.
+A consuming project that wants a reusable domain contract defines its own base
+ABC in its own tree and subclasses it — that ABC is project code, not framework
+code:
 
-Concrete environments subclass either bare `Environment` (no obligations) or
-a contrib mixin (inherits its contract). See [ADR 0005](docs/adr/0005-environment-abc-narrows-contrib-mixins.md).
+```python
+# in your project, not in gooseloop
+class MyDomainEnvironment(gooseloop.Environment):
+    @abstractmethod
+    def build_digest(self) -> str: ...
+```
 
-Recipes call any concrete method via `env_method:<name>` regardless of mixin
-lineage; the source kind dispatches by name on the live instance.
+Recipes call any concrete method via `env_method:<name>` regardless of the
+class's lineage; the source kind dispatches by name on the live instance.
 
 ## 9. Compatibility
 
@@ -360,8 +365,6 @@ this protocol. Specifically:
   working.
 - New source kinds may be added to the `context:` block. Old recipes keep
   working.
-- New methods may be added to contrib mixins. Concrete environments that
-  subclass an older version keep working until they upgrade.
 - BranchPolicy fields may be added with sensible defaults. Old engines that
   don't set them keep working.
 
@@ -377,7 +380,7 @@ PROTOCOL.md                  # this file, at the repo root beside the README
 gooseloop/                   # the framework package (the OSS extraction target)
 ├── __init__.py             # public surface
 ├── __main__.py             # `gooseloop` CLI entry
-├── engine.py               # Engine ABC, registry
+├── engine.py               # Engine ABC (no registry; discovery per ADR 0009)
 ├── environment.py          # Environment ABC (just env_vars)
 ├── phase.py                # Phase + Pipeline + Context dataclasses
 ├── protocol.py             # ReviewOutput, OperatorAction, RoutingEntry TypedDicts
@@ -394,15 +397,15 @@ gooseloop/                   # the framework package (the OSS extraction target)
 ├── session.py              # session folder management
 ├── footer.py               # per-call and per-session footers
 ├── text.py                 # ANSI, banners
-├── config.py               # gooseloop.toml loader (LooperConfig)
-└── contrib/
-    ├── __init__.py
-    ├── customer_pipeline.py    # CustomerPipelineEnvironment ABC
-    └── claude_handoff.py       # ClaudeHandoffEnvironment ABC
+└── config.py               # gooseloop.toml loader (LooperConfig)
 
-# A consuming project's layout:
+# A consuming project's layout (gooseloop is pip-installed; this repo is YOURS):
 my-project/
-├── gooseloop.toml          # which engine, which review/summary recipe, etc.
+├── gooseloop.toml          # default_engine = "my_engine"; recipes, retry, etc.
+├── my_engine/              # your engine package, importable from the loop root
+│   ├── __init__.py         # exposes `engine` (and optional `environment`)
+│   ├── engine.py           # your Engine subclass; returns the Pipeline
+│   └── recipes/            # your review/summary/body *.example.yaml
 ├── run.lock                # present only while a run is in flight (§13);
 │                           # gitignore it
 ├── review.yaml             # user-procured; cp'd from engine's review.example.yaml
@@ -432,10 +435,10 @@ the relevant `<recipe>.example.yaml`. Read §7 (context block). Validate with
 if your recipes need per-recipe rules. Ship `review.example.yaml` and
 `summary.example.yaml` in the engine's recipes directory.
 
-**I want to write an environment.** Subclass `gooseloop.Environment` (if your
-domain doesn't fit existing contrib mixins) or a contrib mixin (to inherit a
-documented contract). Implement `env_vars()` and whatever shape-specific
-methods your recipes call via `env_method:`.
+**I want to write an environment.** Subclass `gooseloop.Environment`. Implement
+`env_vars()` and whatever shape-specific methods your recipes call via
+`env_method:`. If several of your engines share a domain, factor the shared
+methods into your own base ABC in your project — the framework ships none.
 
 **I want to override a recipe in my project.** `cp engine/review.example.yaml
 ./review.yaml`. Edit. Add a `review.local.yaml` for per-machine tweaks
