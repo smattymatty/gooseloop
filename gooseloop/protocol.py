@@ -78,6 +78,28 @@ End your final message in this exact shape:
 """
 
 
+# Appended by the framework to EVERY summary prompt (ADR 0018), the summary-side
+# analogue of REVIEW_OUTPUT_CONTRACT. The summary deliverable is markdown, not
+# JSON: only what the recipe wraps in the markers is kept as summary.md, so a
+# summary phase that lets goose explore no longer dumps tool output and source
+# into the operator's report. The full verbatim transcript still persists under
+# transcripts/ (ADR 0012); this only narrows what summary.md carries.
+SUMMARY_OUTPUT_CONTRACT = """\
+FRAMEWORK SUMMARY OUTPUT CONTRACT (binding; follow this after all domain rules):
+
+Put your ENTIRE markdown report between the two literal marker lines below. Copy
+the markers character-for-character. The framework keeps only what is between
+them and writes that to summary.md; tool output, narration, and this contract
+are discarded from summary.md (the full transcript is kept separately). Render
+only from the inputs already provided — do not explore the codebase or read
+source files.
+
+<<<SUMMARY_MD>>>
+# ...your full markdown report...
+<<<END_SUMMARY>>>
+"""
+
+
 def review_repair_prompt(error: str) -> str:
     """Feedback appended to the output contract when a review is rejected, so
     the model corrects with the EXACT reason instead of repeating the mistake.

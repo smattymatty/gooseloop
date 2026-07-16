@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Summary output is now a marker-wrapped, framework-owned boundary, the markdown
+  analogue of the review boundary (ADR 0018). The summary phase wraps its report
+  in `<<<SUMMARY_MD>>>` / `<<<END_SUMMARY>>>`; gooseloop appends this contract to
+  every summary prompt and writes only the extracted report to `summary.md`, so a
+  summary phase that let goose explore no longer dumps tool output and source into
+  the operator's report. The full verbatim phase output still persists under
+  `transcripts/` (ADR 0012). No marker present → the looper falls back to the full
+  verbatim output and logs that the recipe should be tightened (a summary artifact
+  fails toward keeping content, never toward an empty file).
+
 - Review output is now a framework-owned boundary rather than recipe folklore.
   Gooseloop appends the canonical six-key protocol and exact sentinel markers
   after every review prompt, and the default retry gate accepts only canonically

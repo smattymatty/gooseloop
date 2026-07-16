@@ -19,7 +19,17 @@ prompt: |
   2. The greetings that were actually written (from the GREETINGS block).
   3. Any operator_actions the review or body left in the ledger.
 
-  Keep it under 200 words. No sentinel-wrapped JSON required for summary.
+  Keep it under 200 words.
+
+  OUTPUT CONTRACT: render only from the inputs above. Do not explore the
+  codebase or read source files. Wrap the entire markdown report in the
+  sentinel markers below; the framework keeps only what is between them and
+  writes it to summary.md. Anything outside the markers is narration and is
+  discarded.
+
+  <<<SUMMARY_MD>>>
+  # ...your full markdown report...
+  <<<END_SUMMARY>>>
 
 settings:
   goose_provider: "openrouter"

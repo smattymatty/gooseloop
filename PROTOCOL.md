@@ -145,11 +145,28 @@ The summary phase has access to:
 
 ### Summary output
 
-The summary's output is human-facing. No required JSON schema. Convention:
-markdown to stdout. The looper writes the summary phase's full output verbatim
-to `<session_dir>/summary.md` — the one durable copy once the terminal
-scrollback is gone. This is the only phase output the framework persists in
-full; body phases persist only what they explicitly write via
+The summary's output is human-facing markdown. No required JSON schema. The
+summary phase must wrap its report in sentinel markers, the markdown analogue of
+the review's JSON framing:
+
+```
+<<<SUMMARY_MD>>>
+# ...the markdown report...
+<<<END_SUMMARY>>>
+```
+
+The looper extracts the content between the markers and writes only that to
+`<session_dir>/summary.md`, so a summary phase that let goose explore no longer
+dumps tool output or source into the operator's report (ADR 0018). The framework
+appends this contract to every summary prompt, so correctness of the envelope
+does not depend on each recipe copying it. If no marker is present the looper
+falls back to writing the full output verbatim (and logs that the recipe should
+be tightened) — a summary artifact fails toward keeping content, never toward an
+empty file.
+
+The full verbatim phase output is not lost when the markers narrow `summary.md`:
+it persists under `<session_dir>/transcripts/` as the phase transcript (ADR
+0012). Body phases still persist only what they explicitly write via
 `ctx.record_output`.
 
 ## 4. Body phase rules
@@ -425,7 +442,7 @@ my-project/
 │   └── <timestamp>/
 │       ├── session.meta.json   # model, engine, timestamps
 │       ├── session.log         # append-only event log
-│       ├── summary.md          # the summary phase's full verbatim output
+│       ├── summary.md          # the summary phase's marker-wrapped report (§3)
 │       ├── ledger.json         # FINAL operator_actions + outputs_written
 │       ├── phases.jsonl        # one wide event per phase (§14)
 │       ├── transcripts/        # full goose output per phase (§14)

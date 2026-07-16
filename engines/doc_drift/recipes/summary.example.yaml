@@ -34,6 +34,16 @@ prompt: |
   stdout so the operator sees it in the session footer. You do not need to save
   a file; the engine records its own state separately.
 
+  OUTPUT CONTRACT: render only from the inputs above. Do not explore the
+  codebase or read source files. Wrap the entire markdown report in the
+  sentinel markers below; the framework keeps only what is between them and
+  writes it to summary.md. Anything outside the markers is narration and is
+  discarded.
+
+  <<<SUMMARY_MD>>>
+  # ...your full markdown report...
+  <<<END_SUMMARY>>>
+
 settings:
   goose_provider: "openrouter"
   goose_model: "anthropic/claude-haiku-4-5"

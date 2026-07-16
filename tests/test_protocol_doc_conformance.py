@@ -19,13 +19,17 @@ import pytest
 from gooseloop.extract import (
     DELIVERABLE_END,
     DELIVERABLE_START,
+    SUMMARY_END,
+    SUMMARY_START,
     extract_json_with_provenance,
+    extract_summary_markdown,
 )
 from gooseloop.looper import _params_to_env, _review_output_valid
 from gooseloop.protocol import (
     DEFAULTED_LIST_KEYS,
     PROTOCOL_VERSION,
     REVIEW_OUTPUT_CONTRACT,
+    SUMMARY_OUTPUT_CONTRACT,
     REQUIRED_KEYS,
     ReviewStatus,
     validate_review,
@@ -139,6 +143,38 @@ def test_documented_framing_round_trips_through_extract_and_validate():
         {**entry, "routed_by": "model"} for entry in review["routing"]
     ]
     assert validated["operator_actions"] == review["operator_actions"]
+
+
+def test_doc_names_the_exact_summary_markers(protocol_text):
+    """§3 must name the literal markdown-deliverable markers the code extracts."""
+    assert SUMMARY_START in protocol_text
+    assert SUMMARY_END in protocol_text
+
+
+def test_framework_summary_contract_repeats_exact_markers():
+    """Every summary receives this even when an engine recipe drifts (ADR 0018)."""
+    assert SUMMARY_START in SUMMARY_OUTPUT_CONTRACT
+    assert SUMMARY_END in SUMMARY_OUTPUT_CONTRACT
+
+
+def test_documented_summary_framing_round_trips_through_extract():
+    """A summary emitted exactly as §3 prescribes — marker-wrapped markdown with
+    exploration noise around it — extracts to just the report."""
+    output = (
+        "Loading recipe: some summary\n"
+        "  tree / analyze / read tool noise the model printed first\n"
+        f"{SUMMARY_START}\n"
+        "# Report\n\nState assessed. Nothing to seal.\n"
+        f"{SUMMARY_END}\n"
+        "trailing narration, ignored\n"
+    )
+    assert extract_summary_markdown(output) == "# Report\n\nState assessed. Nothing to seal."
+
+
+def test_no_summary_marker_falls_back_to_none_for_verbatim_keep():
+    """§3: no marker → the looper keeps the full verbatim output. The extractor
+    signals that with None (fail toward keeping content, never an empty file)."""
+    assert extract_summary_markdown("# Report\n\nplain markdown, no markers") is None
 
 
 def test_documented_params_to_env_example_holds():

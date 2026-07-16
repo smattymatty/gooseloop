@@ -40,6 +40,7 @@ from .predicates import file_nonempty
 from .protocol import (
     PROTOCOL_VERSION,
     REVIEW_OUTPUT_CONTRACT,
+    SUMMARY_OUTPUT_CONTRACT,
     OperatorAction,
     ProtocolVersionError,
     ReviewOutput,
@@ -52,7 +53,7 @@ from . import telemetry
 from .guardrails import scan_and_redact
 from .runlock import RunLock
 from .session import log_step, new_session, record_base_env
-from .extract import Extracted, extract_json_with_provenance
+from .extract import Extracted, extract_json_with_provenance, extract_summary_markdown
 from .text import Color, banner, colored
 
 
@@ -816,7 +817,11 @@ class GooseLooper:
         t0 = time.perf_counter()
         outputs_before = len(ctx.artifacts.get("outputs_written", []))
         actions_before = len(ctx.artifacts.get("operator_actions", []))
-        output = self._invoke_recipe(phase, ctx, overlays=overlays)
+        # The framework appends the summary output contract to every summary
+        # prompt (ADR 0018), the summary-side analogue of the review contract:
+        # the marker envelope can't depend on each private recipe copying it.
+        suffix = SUMMARY_OUTPUT_CONTRACT if is_summary else ""
+        output = self._invoke_recipe(phase, ctx, overlays=overlays, prompt_suffix=suffix)
         if output is None:
             self._emit_phase_event(
                 ctx, phase, kind=kind, status="failed", started=started, t0=t0,
@@ -826,7 +831,19 @@ class GooseLooper:
             return 0, False
         if is_summary and ctx.session_dir:
             summary_path = ctx.session_dir / "summary.md"
-            redacted_summary, summary_findings = scan_and_redact(output)
+            # summary.md is the operator-facing report, not the raw transcript
+            # (ADR 0018): keep only what the recipe wrapped in
+            # <<<SUMMARY_MD>>>…<<<END_SUMMARY>>>. The full verbatim output still
+            # persists under transcripts/ (ADR 0012), so nothing is lost. No
+            # marker → fall back to the whole output so a legacy or misbehaving
+            # recipe still yields a durable summary (fail toward keeping content).
+            report = extract_summary_markdown(output)
+            if report is None:
+                report = output
+                log_step(ctx.session_dir,
+                         "summary: no <<<SUMMARY_MD>>> marker; wrote full "
+                         "transcript to summary.md (tighten the summary recipe)")
+            redacted_summary, summary_findings = scan_and_redact(report)
             summary_path.write_text(redacted_summary)
             if summary_findings:
                 log_step(ctx.session_dir,

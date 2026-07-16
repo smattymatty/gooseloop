@@ -11,9 +11,12 @@ import pytest
 from gooseloop.extract import (
     DELIVERABLE_END,
     DELIVERABLE_START,
+    SUMMARY_END,
+    SUMMARY_START,
     Extracted,
     extract_json,
     extract_json_with_provenance,
+    extract_summary_markdown,
 )
 
 
@@ -233,3 +236,62 @@ def test_plain_extract_json_returns_dict_or_none():
     )
     assert extract_json(canonical) == {"status": "done"}
     assert extract_json("no wrapper at all") is None
+
+
+# ---- extract_summary_markdown (the markdown deliverable, ADR 0018) ---
+
+def test_summary_markers_extract_the_report_trimmed():
+    out = (
+        "Loading recipe: journey-witness summary\n"
+        "  tree / analyze / read noise the model printed first\n"
+        f"{SUMMARY_START}\n\n"
+        "## Journey Witness Report\n\nAll clear.\n"
+        f"\n{SUMMARY_END}\n"
+        "trailing narration, ignored\n"
+    )
+    assert extract_summary_markdown(out) == "## Journey Witness Report\n\nAll clear."
+
+
+def test_summary_dumped_source_before_markers_is_not_the_report():
+    """The 2026-07-15 leak: goose read _corpus.py and its `# comment` lines
+    look like markdown H1s. With markers, that dump stays out of the report."""
+    out = (
+        "# ---- identifier scrub (ADR 0001) ----\n"
+        "def scrub_identifiers(text): ...\n"
+        f"{SUMMARY_START}\n"
+        "## Report\n\nNothing to seal.\n"
+        f"{SUMMARY_END}\n"
+    )
+    report = extract_summary_markdown(out)
+    assert report == "## Report\n\nNothing to seal."
+    assert "scrub_identifiers" not in report
+
+
+def test_summary_last_opener_wins_when_model_echoes_the_contract():
+    out = (
+        f"The contract says wrap it: {SUMMARY_START} # ...report... {SUMMARY_END}\n"
+        f"{SUMMARY_START}\n# Real Report\n\nDone.\n{SUMMARY_END}\n"
+    )
+    assert extract_summary_markdown(out) == "# Real Report\n\nDone."
+
+
+def test_summary_strips_ansi():
+    out = f"\x1b[32m{SUMMARY_START}\x1b[0m\n# Report\n{SUMMARY_END}\n"
+    assert extract_summary_markdown(out) == "# Report"
+
+
+def test_summary_missing_close_marker_keeps_to_end():
+    out = f"noise\n{SUMMARY_START}\n# Report\n\nran to the end of output.\n"
+    assert extract_summary_markdown(out) == "# Report\n\nran to the end of output."
+
+
+def test_summary_no_opener_returns_none_for_fallback():
+    """No marker → None, the looper's signal to keep the full verbatim
+    transcript (fail toward keeping content, never an empty summary)."""
+    assert extract_summary_markdown("# Report\n\njust markdown, no markers") is None
+
+
+def test_summary_empty_payload_returns_none():
+    """Markers present but nothing between them is treated as no marker, so
+    the looper falls back to the full output rather than writing an empty file."""
+    assert extract_summary_markdown(f"{SUMMARY_START}\n   \n{SUMMARY_END}") is None

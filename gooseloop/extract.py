@@ -37,6 +37,13 @@ from .text import strip_ansi
 DELIVERABLE_START = "<<<DELIVERABLE_JSON>>>"
 DELIVERABLE_END = "<<<END_DELIVERABLE>>>"
 
+# The summary phase's deliverable is markdown, not JSON, so it gets its own
+# wrapper (ADR 0018). Same "last opener wins" rationale as the JSON canonical
+# sentinel: the model often echoes the contract earlier, then emits the real
+# report at the bottom.
+SUMMARY_START = "<<<SUMMARY_MD>>>"
+SUMMARY_END = "<<<END_SUMMARY>>>"
+
 
 @dataclass(frozen=True)
 class Extracted:
@@ -165,6 +172,30 @@ def extract_json(text: str) -> Optional[dict[str, Any]]:
     """Backwards-compatible thin wrapper for callers that don't need provenance."""
     result = extract_json_with_provenance(text)
     return result.payload if result else None
+
+
+def extract_summary_markdown(text: str) -> Optional[str]:
+    """The markdown report between <<<SUMMARY_MD>>> and <<<END_SUMMARY>>>.
+
+    Returns the report (ANSI-stripped, trimmed) or None when there is no
+    usable payload — no opener, or nothing but whitespace between the
+    markers. None is the caller's signal to fall back to the full transcript
+    (looper.py summary-write): a summary artifact should fail toward keeping
+    content, never toward an empty file.
+
+    Last opener wins, matching `_canonical_sentinel`: recipes echo the
+    contract shape earlier in the prompt/transcript, so the real report is
+    the final wrapped block. A missing close marker keeps everything after
+    the opener (the report ran to end-of-output).
+    """
+    clean = strip_ansi(text)
+    start = clean.rfind(SUMMARY_START)
+    if start == -1:
+        return None
+    payload_start = start + len(SUMMARY_START)
+    end = clean.find(SUMMARY_END, payload_start)
+    report = (clean[payload_start:end] if end != -1 else clean[payload_start:]).strip()
+    return report or None
 
 
 # --- balanced-object scan -----------------------------------------

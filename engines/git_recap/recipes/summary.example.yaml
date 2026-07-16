@@ -22,3 +22,13 @@ prompt: |
   Do not search the filesystem; at most, read the one entry file named
   above if you need its line count. Keep the report under twenty lines;
   it prints to the operator's terminal and session summary.
+
+  OUTPUT CONTRACT: render only from the inputs above and the one journal entry
+  file named above. Do not explore the codebase or read source files. Wrap the
+  entire markdown report in the sentinel markers below; the framework keeps only
+  what is between them and writes it to summary.md. Anything outside the markers
+  is narration and is discarded.
+
+  <<<SUMMARY_MD>>>
+  # ...your full markdown report...
+  <<<END_SUMMARY>>>
