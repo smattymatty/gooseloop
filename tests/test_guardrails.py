@@ -60,6 +60,49 @@ def test_clean_text_untouched():
     assert findings == []
 
 
+def test_source_code_is_not_flagged_as_assigned_secret():
+    """The doc_drift failure: engines paste .py files into prompts, and the
+    old KEY=value rule read type annotations, attribute access, and function
+    calls as secrets. None of these is a credential; none may be flagged."""
+    code = (
+        "_KEYED_LISTS: dict[str, _Keyer] = {\n"   # substring KEY + code value
+        "TOKEN_RE = re.compile('x')\n"            # secret-named, dotted value
+        "MONKEY = bananarama123456\n"             # substring KEY, not a component
+        "SECRET_VALUE = get_secret_value()\n"     # secret-named, function call
+        "API_KEY = os.environ.get('X')\n"         # attribute access + call
+    )
+    redacted, findings = scan_and_redact(code)
+    assert redacted == code          # nothing touched
+    assert findings == []            # nothing flagged
+
+
+def test_real_assigned_secrets_still_redacted():
+    """Coverage preserved: a genuine credential in KEY=value still redacts,
+    and a JWT (which carries dots the assignment charset now excludes) is
+    caught by its own token shape."""
+    aws = "AWS_SECRET_ACCESS_KEY = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
+    red, findings = scan_and_redact(aws)
+    assert "wJalrXUt" not in red
+    assert "AWS_SECRET_ACCESS_KEY" in red          # key name survives
+    assert any("assigned secret" in f.kind for f in findings)
+
+    jwt = ("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9."
+           "eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV\n")
+    red2, findings2 = scan_and_redact(jwt)
+    assert "SflKxwRJ" not in red2
+    assert any(f.kind == "jwt" for f in findings2)
+
+
+def test_torn_private_key_block_is_bounded_not_to_eof():
+    """A lone BEGIN marker (e.g. quoted in a doc) redacts conservatively but
+    must not greedily eat the rest of the document."""
+    doc = "-----BEGIN PRIVATE KEY-----\n" + "A" * 10000 + "\nTAIL_SURVIVES\n"
+    redacted, findings = scan_and_redact(doc)
+    assert "[REDACTED:private key block]" in redacted
+    assert "TAIL_SURVIVES" in redacted          # bounded: the tail is intact
+    assert any("private key" in f.kind for f in findings)
+
+
 # ---- the looper wiring -------------------------------------------------
 
 

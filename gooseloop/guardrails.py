@@ -35,18 +35,44 @@ _TOKEN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("pypi token", re.compile(r"\bpypi-[A-Za-z0-9_-]{16,}")),
     ("slack token", re.compile(r"\bxox[bapors]-[A-Za-z0-9-]{10,}")),
     ("age secret key", re.compile(r"\bAGE-SECRET-KEY-[A-Z0-9]{8,}")),
+    # JWT (header.payload.signature, both leading segments base64 of `{"…`).
+    # Carries dots, so the assignment pass below deliberately skips it; this
+    # distinctive shape catches it independent of any key name.
+    ("jwt", re.compile(
+        r"\beyJ[A-Za-z0-9_-]{6,}\.eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}")),
     ("private key block", re.compile(
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"
-        r"|-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*",  # torn block still redacts
+        # Torn block (no END marker) still redacts, but BOUNDED: a lone marker
+        # quoted in a doc must not greedily redact to end-of-file. 8000 chars
+        # covers any real key; standard private keys are under 4 KB.
+        r"|-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]{0,8000}",
     )),
 )
 
-# KEY=value / KEY: value where the key NAME says secret and the value is
-# long enough to be one. The name survives; the value is redacted.
+# KEY=value / KEY: value where the key NAME is a secret-shaped identifier AND
+# the value looks like a credential. Both halves are tightened against source
+# code, otherwise a false-positive minefield (doc_drift pastes .py files into
+# prompts, so `_KEYED_LISTS: dict[str, _Keyer]` used to read as a secret):
+#   - the secret word must be a full `_`-delimited component, so `_KEYED_LISTS`,
+#     `MONKEY`, and `KEYWORD` do NOT match — only real shapes like API_KEY,
+#     STRIPE_SECRET_KEY, DB_PASSWORD.
+#   - the value is a credential charset (base64/hex/token): no spaces and no
+#     code punctuation (`.`, `[]`, `()`, `,`), so a type annotation
+#     `dict[str, X]`, an attribute access `os.environ`, or a short call
+#     `get_key()` is not mistaken for a secret. JWTs carry dots and are caught
+#     by the token pass above instead.
+# The key name survives; the value is redacted.
+_SECRET_WORD = r"(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD)"
 _ASSIGNMENT_RE = re.compile(
-    r"(?P<key>[A-Za-z_][A-Za-z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD)[A-Za-z0-9_]*)"
+    # Left boundary: the key must start at a real identifier edge, so `KEY`
+    # buried in `MONKEY` (or `KEYED` mid-word) is not a match on its own.
+    r"(?<![A-Za-z0-9_])"
+    r"(?P<key>_?(?:[A-Za-z0-9]+_)*" + _SECRET_WORD + r"(?:_[A-Za-z0-9]+)*)"
     r"(?P<sep>\s*[=:]\s*[\"']?)"
-    r"(?P<value>[^\s\"']{8,})",
+    # Possessive run + `(?!\()`: the value must not be a function call
+    # (SECRET = get_secret_value()). Possessive so the whole run is tested
+    # against the trailing `(`, never backtracked into a shorter false match.
+    r"(?P<value>[A-Za-z0-9+/=_-]{12,}+)(?!\()",
 )
 
 
